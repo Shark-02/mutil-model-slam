@@ -68,10 +68,7 @@ public:
 
     // Preprocess the input and call Track(). Extract features and performs stereo matching.
     cv::Mat GrabImageStereo(const cv::Mat &imRectLeft,const cv::Mat &imRectRight, const double &timestamp);
-    cv::Mat GrabImageRGBD(const cv::Mat &imRGB, const cv::Mat &imD, const double &timestamp,
-                     const std::vector<Detection::Ptr>& detections,
-                     const std::vector<TextDetection::Ptr>& text_dets,
-                     bool force_relocalize = false, bool bProcessDepth = true);
+    cv::Mat GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const double &timestamp, const std::vector<Detection::Ptr>& detections, bool force_relocalize=false, bool bProcessDepth=false);
     cv::Mat GrabImageMonocular(const cv::Mat &im, const double &timestamp, const std::vector<Detection::Ptr>& detections, bool force_relocalize);
 
     void SetLocalMapper(LocalMapping* pLocalMapper);

@@ -1,27 +1,28 @@
-// TextDetectionsFromFile.h
 #pragma once
+#include "ImageDetections.h"
 #include <string>
 #include <vector>
 #include <memory>
-#include <opencv2/core/core.hpp>
 
 namespace ORB_SLAM2 {
 
-struct TextDetection {
-    using Ptr = std::shared_ptr<TextDetection>;
-    std::vector<cv::Point2f> quad;  // 四边形顶点
-    std::string text;
-    float score;
-};
-
-class TextDetectionsFromFile {
+class TextDetectionsFromFile : public ImageDetectionsManager {
 public:
-    TextDetectionsFromFile(const std::string &folder);
+    TextDetectionsFromFile(const std::string &folder) : folder_(folder) {}
 
-    std::vector<TextDetection::Ptr> detect(const std::string &image_filename) const;
+    std::vector<Detection::Ptr> detect(const std::string &image_filename) const override;
+
+    std::vector<Detection::Ptr> detect(unsigned int idx) const override {
+        std::cerr << "This function is not available for TextDetectionsFromFile\n";
+        return {};
+    }
+    std::vector<Detection::Ptr> detect(cv::Mat img) const override {
+        std::cerr << "This function is not available for TextDetectionsFromFile\n";
+        return {};
+    }
 
 private:
     std::string folder_;
 };
 
-}
+} // namespace ORB_SLAM2

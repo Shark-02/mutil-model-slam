@@ -166,18 +166,19 @@ int main(int argc, char **argv)
         }
 
         // Get text detections
-        std::vector<ORB_SLAM2::TextDetection::Ptr> text_dets;
         if (text_detector) {
-            text_dets = text_detector->detect(filename);
+            std::vector<ORB_SLAM2::Detection::Ptr> text_dets = text_detector->detect(filename);
             std::cout << "[OCR] Frame " << filename 
                     << " -> " << text_dets.size() << " text detections" << std::endl;
             for (auto &td : text_dets) {
                 std::cout << "   word='" << td->text 
-                        << "' score=" << td->score 
+                        << "' score=" << td->text_confidence 
                         << " quad=";
-                for (auto &p : td->quad) std::cout << "(" << p.x << "," << p.y << ")";
+                for (auto &p : td->quad) std::cout << "(" << p.x() << "," << p.y() << ")";
                 std::cout << std::endl;
             }
+            // 合并（文本也作为 Detection 传进去）
+            detections.insert(detections.end(), text_dets.begin(), text_dets.end());
         }
 
         // Pass the image and detections to the SLAM system
