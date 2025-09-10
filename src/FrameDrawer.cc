@@ -307,6 +307,33 @@ void FrameDrawer::Update(Tracking *pTracker, bool force_reloc)
                 }
             }
         }
+
+        // ---- 绘制文本检测 ----
+        for (auto &td : pTracker->GetCurrentTextDetections()) {
+            // 绘制四边形（优先）
+            if (!td->quad.empty() && td->quad.size() == 4) {
+                for (int k = 0; k < 4; ++k) {
+                    cv::line(mIm, 
+                        cv::Point2f(td->quad[k].x(), td->quad[k].y()), 
+                        cv::Point2f(td->quad[(k+1)%4].x(), td->quad[(k+1)%4].y()), 
+                        cv::Scalar(0,255,255), 2);
+                }
+            } else {
+                // 如果没有 quad，就画 bbox
+                int l = (int)td->bbox[0];
+                int t = (int)td->bbox[1];
+                int r = (int)td->bbox[2];
+                int b = (int)td->bbox[3];
+                cv::rectangle(mIm, cv::Point(l,t), cv::Point(r,b), cv::Scalar(0,255,255), 2);
+            }
+
+            // 绘制文本标签
+            std::string label = td->text + " (" + std::to_string(td->score).substr(0,4) + ")";
+            cv::putText(mIm, label,
+                        cv::Point((int)td->bbox[0], (int)td->bbox[1] - 5),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0,255,255), 2);
+        }
+
     }
     
     //std::cout << "FrameDrawer updated, det:" << detections.size() << "," << detections_widgets_.size() << std::endl;

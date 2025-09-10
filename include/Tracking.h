@@ -147,6 +147,10 @@ public:
         return current_frame_detections_;
     }
 
+    const std::vector<Detection::Ptr>& GetCurrentTextDetections() const {
+        return current_frame_text_detections_;
+    }
+
     std::vector<Detection::Ptr> GetCurrentFrameGoodDetections() {
         return current_frame_good_detections_;
     }
