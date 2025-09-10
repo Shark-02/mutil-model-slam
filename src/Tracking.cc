@@ -259,6 +259,8 @@ cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const d
     mCurrentFrame = Frame(mImGray,imDepth,timestamp,mpORBextractorLeft,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth,bProcessDepth);
     //ADDED BY YUTONG TO PROCESS DETECTION TO AVOID SIMILAR DETS
     current_frame_detections_.clear();
+    std::vector<Detection::Ptr> object_detections;
+    std::vector<Detection::Ptr> text_detections;
     for (auto det1 : detections) {
         bool is_text = !det1->text.empty();
 
@@ -273,7 +275,7 @@ cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const d
                 continue;
 
             // 与已有检测去重
-            for (auto det2 : current_frame_detections_) {
+            for (auto det2 : object_detections) {
                 double bbox_iou = bboxes_iou(det1->bbox, det2->bbox);
                 if (det1->category_id == det2->category_id) {
                     if (bbox_iou > 0.3)
@@ -285,7 +287,7 @@ cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const d
             }
 
             if (!has_similar_det)
-                current_frame_detections_.push_back(det1);
+                object_detections.push_back(det1);
 
         } else {
             // 文本检测：放宽规则，只保留基本 sanity check
@@ -298,14 +300,18 @@ cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const d
             if(det1->score < 0.05) continue;
             if(det1->bbox[2] <= det1->bbox[0] || det1->bbox[3] <= det1->bbox[1]) continue;
 
+            text_detections.push_back(det1);
             std::cout << "[Tracking] keep text='" << det1->text 
-                    << "' score=" << det1->score << std::endl;
-
-            current_frame_detections_.push_back(det1);
+                    << "' score=" << det1->score << std::endl;  
         }
     }
 
 
+    // 视需要，把 object_detections 也放回 current_frame_detections_（兼容之后的旧代码）
+    current_frame_detections_ = object_detections;   // only objects
+
+    // 并单独保存文本检测列表以备绘制/其它文本专用逻辑使用
+    current_frame_text_detections_ = text_detections; // 你需要在类里声明这个成员 vector
 
     current_depth_data_per_det_.clear();
     current_depth_data_per_det_.resize(current_frame_detections_.size(), std::make_pair(0.0f, 0.0f));

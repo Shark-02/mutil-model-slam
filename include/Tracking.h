@@ -277,6 +277,7 @@ protected:
     size_t current_frame_idx_ = 0;
     bool createdNewKeyFrame_ = false;
     std::vector<Detection::Ptr> current_frame_detections_;
+    std::vector<Detection::Ptr> current_frame_text_detections_;
     std::vector<std::pair<float, float> > current_depth_data_per_det_;
     std::vector<Detection::Ptr> current_frame_good_detections_;
     Graph* current_frame_graph_;
