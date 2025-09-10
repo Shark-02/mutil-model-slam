@@ -249,33 +249,63 @@ cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const d
     if((fabs(mDepthMapFactor-1.0f)>1e-5) || imDepth.type()!=CV_32F)
         imDepth.convertTo(imDepth,CV_32F,mDepthMapFactor);
 
+    
+    /*std::cout << "[DEBUG] detections.size=" << detections.size() << std::endl;
+    for (auto &d : detections) {
+        std::cout << "   det score=" << d->score << " text='" << d->text << "'" << std::endl;
+    }*/
+
+
     mCurrentFrame = Frame(mImGray,imDepth,timestamp,mpORBextractorLeft,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth,bProcessDepth);
     //ADDED BY YUTONG TO PROCESS DETECTION TO AVOID SIMILAR DETS
     current_frame_detections_.clear();
-    for(auto det1 : detections){
-        bool has_similar_det = false;
-         //0.2, 300, 0.3, 5, 0.4 for diamond
-        //0.2, 300, 0.1, 10, 0.4 for TUM fr2
-        if(det1->score < 0.2 || bbox_area(det1->bbox) < 300 ||
-            bbox_area(det1->bbox) > 0.5*im_rgb_.rows*im_rgb_.cols ||
-            //is_near_boundary(det1->bbox, im_rgb_.cols, im_rgb_.rows, 10) ||
-            bboxes_iou(det1->bbox, det1->ell.ComputeBbox())<0.2) 
-            continue;
-        //if(det1->category_id==0 || det1->category_id==56) continue; //person & chair
-        for (auto det2 : current_frame_detections_ ){
-            double bbox_iou = bboxes_iou(det1->bbox, det2->bbox);
-            if(det1->category_id == det2->category_id){
-                if(bbox_iou>0.3)
-                    has_similar_det = true;
+    for (auto det1 : detections) {
+        bool is_text = !det1->text.empty();
+
+        if (!is_text) {
+            // 物体过滤规则
+            bool has_similar_det = false;
+
+            // 过滤条件
+            if (det1->score < 0.2 || bbox_area(det1->bbox) < 300 ||
+                bbox_area(det1->bbox) > 0.5 * im_rgb_.rows * im_rgb_.cols ||
+                bboxes_iou(det1->bbox, det1->ell.ComputeBbox()) < 0.2)
+                continue;
+
+            // 与已有检测去重
+            for (auto det2 : current_frame_detections_) {
+                double bbox_iou = bboxes_iou(det1->bbox, det2->bbox);
+                if (det1->category_id == det2->category_id) {
+                    if (bbox_iou > 0.3)
+                        has_similar_det = true;
+                } else {
+                    if (bbox_iou > 0.6)
+                        has_similar_det = true;
+                }
             }
-            else{
-                if(bbox_iou>0.6)
-                    has_similar_det = true;
-            }
-        }
-        if(!has_similar_det)
+
+            if (!has_similar_det)
+                current_frame_detections_.push_back(det1);
+
+        } else {
+            // 文本检测：放宽规则，只保留基本 sanity check
+            std::cout << "[Tracking] candidate text='" << det1->text
+                    << "' raw_score=" << det1->score
+                    << " conf=" << det1->text_confidence 
+                    << "bbox=" << det1->bbox.transpose()
+                    << std::endl;
+
+            if(det1->score < 0.05) continue;
+            if(det1->bbox[2] <= det1->bbox[0] || det1->bbox[3] <= det1->bbox[1]) continue;
+
+            std::cout << "[Tracking] keep text='" << det1->text 
+                    << "' score=" << det1->score << std::endl;
+
             current_frame_detections_.push_back(det1);
+        }
     }
+
+
 
     current_depth_data_per_det_.clear();
     current_depth_data_per_det_.resize(current_frame_detections_.size(), std::make_pair(0.0f, 0.0f));
@@ -356,6 +386,17 @@ cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const d
             mCurrentFrame.graph->add_edge(i, distances[m].first);
         }
     }
+
+    for (auto &det : current_frame_detections_) {
+        if (!det->text.empty()) {
+            std::cout << "[Tracking] Text='" << det->text 
+                    << "' score=" << det->text_confidence 
+                    << " quad=";
+            for (auto &p : det->quad) std::cout << "(" << p.x() << "," << p.y() << ")";
+            std::cout << std::endl;
+        }
+    }
+
     mCurrentFrame.graph->compute_feature_vectors();
     //current_frame_graph_ = mCurrentFrame.graph;
     

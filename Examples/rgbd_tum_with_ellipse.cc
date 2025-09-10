@@ -168,6 +168,7 @@ int main(int argc, char **argv)
         // Get text detections
         if (text_detector) {
             std::vector<ORB_SLAM2::Detection::Ptr> text_dets = text_detector->detect(filename);
+            /*
             std::cout << "[OCR] Frame " << filename 
                     << " -> " << text_dets.size() << " text detections" << std::endl;
             for (auto &td : text_dets) {
@@ -176,7 +177,7 @@ int main(int argc, char **argv)
                         << " quad=";
                 for (auto &p : td->quad) std::cout << "(" << p.x() << "," << p.y() << ")";
                 std::cout << std::endl;
-            }
+            }*/
             // 合并（文本也作为 Detection 传进去）
             detections.insert(detections.end(), text_dets.begin(), text_dets.end());
         }

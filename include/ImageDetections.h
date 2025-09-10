@@ -53,10 +53,9 @@ public:
         // ====== 新增构造函数（文本检测） ======
     Detection(unsigned int cat, double det_score, const BBox2 bb,
             const std::string& txt,
-            double txt_conf,
             const std::vector<Eigen::Vector2d>& quad_pts)
-    : category_id(cat), score(det_score), bbox(bb), ell(Ellipse()),
-        text(txt), text_confidence(txt_conf), quad(quad_pts) {}
+        : category_id(cat), score(det_score), bbox(bb), ell(Ellipse()),
+        text(txt), text_confidence(det_score), quad(quad_pts) {}
 
     friend std::ostream& operator <<(std::ostream& os, const Detection& det);
     unsigned int category_id;
