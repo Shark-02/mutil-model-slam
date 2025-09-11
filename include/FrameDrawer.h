@@ -91,6 +91,29 @@ struct ObjectProjectionWidget
     double uncertainty;
 };
 
+struct TextWidget {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW;
+    Eigen::Vector4d bbox;                       // l,t,r,b
+    std::vector<Eigen::Vector2d> quad;          // optional 4 points
+    std::string text;
+    float score;
+    cv::Scalar color;
+    int thickness;
+
+    TextWidget() : bbox(Eigen::Vector4d::Zero()), score(0.0f), color(0,255,255), thickness(2) {}
+
+    TextWidget(const Eigen::Vector4d& bb,
+               const std::vector<Eigen::Vector2d>& q,
+               const std::string& txt,
+               float sc,
+               const cv::Scalar& col,
+               int th)
+        : bbox(bb), quad(q), text(txt), score(sc), color(col), thickness(th) {}
+};
+
+
+
+
 class FrameDrawer
 {
 public:
@@ -107,7 +130,7 @@ public:
     //CHANGED BY YUTONG TO SAVE COMPLETE IMGS
     cv::Mat DrawDetections(cv::Mat img, std::vector<DetectionWidget, Eigen::aligned_allocator<DetectionWidget>> dets=std::vector<DetectionWidget, Eigen::aligned_allocator<DetectionWidget>>());
     cv::Mat DrawProjections(cv::Mat img, std::vector<ObjectProjectionWidget, Eigen::aligned_allocator<ObjectProjectionWidget>> projs=std::vector<ObjectProjectionWidget, Eigen::aligned_allocator<ObjectProjectionWidget>>());
-
+    cv::Mat DrawTexts(cv::Mat img, std::vector<TextWidget, Eigen::aligned_allocator<TextWidget>> texts = {});
     void SetUseCategoryColors(bool use_cat_cols) {
         use_category_cols_ = use_cat_cols;
     }
@@ -131,6 +154,7 @@ protected:
     Map* mpMap;
     std::vector<DetectionWidget, Eigen::aligned_allocator<DetectionWidget>> detections_widgets_;
     std::vector<ObjectProjectionWidget, Eigen::aligned_allocator<ObjectProjectionWidget>> object_projections_widgets_;
+    std::vector<TextWidget, Eigen::aligned_allocator<TextWidget>> text_widgets_;
 
     std::mutex mMutex;
     std::mutex mMutex2;//added by yutong, cause she wants to use DrawDetections and DrawProjections in Tracking thread too.

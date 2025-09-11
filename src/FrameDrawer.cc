@@ -308,30 +308,26 @@ void FrameDrawer::Update(Tracking *pTracker, bool force_reloc)
             }
         }
 
-        // ---- 绘制文本检测 ----
+        // ---- 文本检测 ----
+        // 代替直接绘制的那段，放在 Update() 内合适位置（在 lock(mMutex) 的上下文里）
+        text_widgets_.clear();
         for (auto &td : pTracker->GetCurrentTextDetections()) {
-            // 绘制四边形（优先）
-            if (!td->quad.empty() && td->quad.size() == 4) {
-                for (int k = 0; k < 4; ++k) {
-                    cv::line(mIm, 
-                        cv::Point2f(td->quad[k].x(), td->quad[k].y()), 
-                        cv::Point2f(td->quad[(k+1)%4].x(), td->quad[(k+1)%4].y()), 
-                        cv::Scalar(0,255,255), 2);
-                }
-            } else {
-                // 如果没有 quad，就画 bbox
-                int l = (int)td->bbox[0];
-                int t = (int)td->bbox[1];
-                int r = (int)td->bbox[2];
-                int b = (int)td->bbox[3];
-                cv::rectangle(mIm, cv::Point(l,t), cv::Point(r,b), cv::Scalar(0,255,255), 2);
+            // bbox -> Eigen::Vector4d
+            Eigen::Vector4d bb;
+            bb << td->bbox[0], td->bbox[1], td->bbox[2], td->bbox[3];
+
+            // quad -> vector<Eigen::Vector2d>
+            std::vector<Eigen::Vector2d> quad_pts;
+            quad_pts.reserve(td->quad.size());
+            for (auto &p : td->quad) {
+                quad_pts.emplace_back(Eigen::Vector2d(p.x(), p.y()));
             }
 
-            // 绘制文本标签
-            std::string label = td->text + " (" + std::to_string(td->score).substr(0,4) + ")";
-            cv::putText(mIm, label,
-                        cv::Point((int)td->bbox[0], (int)td->bbox[1] - 5),
-                        cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0,255,255), 2);
+            // choose color: for now fixed (cyan)
+            cv::Scalar col(0, 255, 255);
+
+            TextWidget tw(bb, quad_pts, td->text, td->score, col, 2);
+            text_widgets_.push_back(tw);
         }
 
     }
@@ -406,6 +402,7 @@ void draw_ellipse_dashed(cv::Mat img, const Ellipse& ell, const cv::Scalar& colo
     }
 }
 
+//画3D椭球
 cv::Mat FrameDrawer::DrawProjections(cv::Mat img, std::vector<ObjectProjectionWidget, Eigen::aligned_allocator<ObjectProjectionWidget>> projs)
 {
     unique_lock<mutex> lock(mMutex2);
@@ -454,5 +451,52 @@ cv::Mat FrameDrawer::DrawProjections(cv::Mat img, std::vector<ObjectProjectionWi
 
     return img;
 }
+
+cv::Mat FrameDrawer::DrawTexts(
+    cv::Mat img,
+    std::vector<TextWidget, Eigen::aligned_allocator<TextWidget>> texts)
+{
+    unique_lock<mutex> lock(mMutex2);
+    std::vector<TextWidget, Eigen::aligned_allocator<TextWidget>> to_draw;
+    {
+        unique_lock<mutex> lock(mMutex);
+        if (texts.empty())
+            to_draw = text_widgets_;
+        else
+            to_draw = texts;
+    }
+
+    if (to_draw.empty()) return img;
+
+    for (auto &tw : to_draw) {
+        // draw quad if exists (priority)
+        if (!tw.quad.empty() && tw.quad.size() == 4) {
+            for (int k = 0; k < 4; ++k) {
+                cv::line(img,
+                         cv::Point2f((float)tw.quad[k][0], (float)tw.quad[k][1]),
+                         cv::Point2f((float)tw.quad[(k+1)%4][0], (float)tw.quad[(k+1)%4][1]),
+                         tw.color, tw.thickness);
+            }
+        } else {
+            // draw bbox
+            cv::rectangle(img,
+                          cv::Point2i((int)tw.bbox[0], (int)tw.bbox[1]),
+                          cv::Point2i((int)tw.bbox[2], (int)tw.bbox[3]),
+                          tw.color, tw.thickness);
+        }
+
+        // draw text label (simple; Chinese will not render correctly with putText,
+        // you said you handle Chinese later)
+        std::stringstream ss;
+        ss << tw.text << " (" << std::fixed << std::setprecision(2) << tw.score << ")";
+        cv::putText(img, ss.str(),
+                    cv::Point2i(std::max(0, (int)tw.bbox[0]), std::max(12, (int)tw.bbox[1] - 5)),
+                    cv::FONT_HERSHEY_DUPLEX, 0.5, tw.color, 1, false);
+    }
+
+    return img;
+}
+
+
 
 } //namespace ORB_SLAM

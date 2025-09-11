@@ -187,6 +187,7 @@ void Viewer::Run()
             mpFrameDrawer->DrawDetections(im);
             //std::cout<<"DrawProjections"<<std::endl;
             mpFrameDrawer->DrawProjections(im);
+            mpFrameDrawer->DrawTexts(im);
         }
         
         cv::imshow("VOOM: Current Frame",im);
