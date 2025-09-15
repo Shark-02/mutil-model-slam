@@ -145,4 +145,39 @@ std::vector<Object*> Map::GetAllObjects()
     return std::vector<Object*>(mspObjects.begin(),mspObjects.end());
 }
 
+void Map::AddMapText(MapText* pMT)
+{
+    // 加锁，确保线程安全
+    std::unique_lock<std::mutex> lock(mMutexMapTexts);
+    
+    // 将新的MapText指针添加到容器中
+    mspMapTexts.push_back(pMT);
+}
+
+void Map::EraseMapText(MapText* pMT)
+{
+    // 加锁，确保线程安全
+    std::unique_lock<std::mutex> lock(mMutexMapTexts);
+
+    // 在vector中查找要删除的MapText指针
+    for (auto it = mspMapTexts.begin(); it != mspMapTexts.end(); ++it)
+    {
+        if (*it == pMT)
+        {
+            // 找到后，从vector中移除
+            mspMapTexts.erase(it);
+            break; // 找到并删除后即可退出循环
+        }
+    }
+}
+
+std::vector<MapText*> Map::GetAllMapTexts()
+{
+    // 加锁，确保线程安全
+    std::unique_lock<std::mutex> lock(mMutexMapTexts);
+    
+    // 返回容器的副本
+    return mspMapTexts;
+}
+
 } //namespace ORB_SLAM

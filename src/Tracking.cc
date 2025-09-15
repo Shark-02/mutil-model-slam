@@ -291,18 +291,9 @@ cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const d
 
         } else {
             // 文本检测：放宽规则，只保留基本 sanity check
-            std::cout << "[Tracking] candidate text='" << det1->text
-                    << "' raw_score=" << det1->score
-                    << " conf=" << det1->text_confidence 
-                    << "bbox=" << det1->bbox.transpose()
-                    << std::endl;
-
             if(det1->score < 0.05) continue;
             if(det1->bbox[2] <= det1->bbox[0] || det1->bbox[3] <= det1->bbox[1]) continue;
-
             text_detections.push_back(det1);
-            std::cout << "[Tracking] keep text='" << det1->text 
-                    << "' score=" << det1->score << std::endl;  
         }
     }
 
@@ -310,8 +301,12 @@ cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const d
     // 视需要，把 object_detections 也放回 current_frame_detections_（兼容之后的旧代码）
     current_frame_detections_ = object_detections;   // only objects
 
-    // 并单独保存文本检测列表以备绘制/其它文本专用逻辑使用
-    current_frame_text_detections_ = text_detections; // 你需要在类里声明这个成员 vector
+    // 单独保存文本检测列表以备绘制/其它文本专用逻辑使用
+    current_frame_text_detections_ = text_detections; 
+    mCurrentFrame.vTextDetections = current_frame_text_detections_;
+    // 初始化文本匹配结果容器 (大小与当前帧特征点数N对应)
+    mCurrentFrame.mvpMapTexts.resize(mCurrentFrame.N, static_cast<MapText*>(NULL));
+    mCurrentFrame.mvbOutlierText.resize(mCurrentFrame.N, false);
 
     current_depth_data_per_det_.clear();
     current_depth_data_per_det_.resize(current_frame_detections_.size(), std::make_pair(0.0f, 0.0f));
@@ -393,15 +388,6 @@ cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const d
         }
     }
 
-    for (auto &det : current_frame_detections_) {
-        if (!det->text.empty()) {
-            std::cout << "[Tracking] Text='" << det->text 
-                    << "' score=" << det->text_confidence 
-                    << " quad=";
-            for (auto &p : det->quad) std::cout << "(" << p.x() << "," << p.y() << ")";
-            std::cout << std::endl;
-        }
-    }
 
     mCurrentFrame.graph->compute_feature_vectors();
     //current_frame_graph_ = mCurrentFrame.graph;

@@ -96,6 +96,11 @@ public:
     int TrackedMapPoints(const int &minObs);
     MapPoint* GetMapPoint(const size_t &idx);
 
+    //文本
+    void AddMapTextMatch(MapText* pMT, const size_t &idx);
+    void EraseMapTextMatch(const size_t &idx);
+    std::vector<MapText*> GetMapTextMatches();
+
     // KeyPoint functions
     std::vector<size_t> GetFeaturesInArea(const float &x, const float  &y, const float  &r) const;
     vector<size_t> GetFeaturesInBox(const float &x_min, const float &x_max, const float  &y_min, const float  &y_max) const;
@@ -199,6 +204,8 @@ public:
 
     // MapPoints associated to keypoints
     std::vector<MapPoint*> mvpMapPoints;
+    //文本
+    std::vector<MapText*> mvpMapTexts;
 
     //ADDED FOR GRAPH
     Graph* graph;

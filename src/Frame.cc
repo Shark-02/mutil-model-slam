@@ -55,6 +55,11 @@ Frame::Frame(const Frame &frame)
 
     if(!frame.mTcw.empty())
         SetPose(frame.mTcw);
+
+    //ADDED BY YU
+    this->vTextDetections = frame.vTextDetections;
+    this->mvpMapTexts = frame.mvpMapTexts;
+    this->mvbOutlierText = frame.mvbOutlierText;
 }
 
 
@@ -91,7 +96,6 @@ Frame::Frame(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timeSt
 
     mvpMapPoints = vector<MapPoint*>(N,static_cast<MapPoint*>(NULL));    
     mvbOutlier = vector<bool>(N,false);
-
 
     // This is done only for the first Frame (or after a change in the calibration)
     if(mbInitialComputations)

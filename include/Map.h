@@ -39,6 +39,7 @@ class KeyFrame;
 class MapObject;
 class Graph;
 class Object;
+class MapText;
 
 class Map
 {
@@ -56,6 +57,7 @@ public:
     std::vector<KeyFrame*> GetAllKeyFrames();
     std::vector<MapPoint*> GetAllMapPoints();
     std::vector<Object*> GetAllObjects();
+    std::vector<MapText*> GetAllMapTexts();
     std::vector<MapPoint*> GetReferenceMapPoints();
 
     long unsigned int MapPointsInMap();
@@ -65,7 +67,7 @@ public:
 
     void clear();
 
-    vector<KeyFrame*> mvpKeyFrameOrigins;
+    std::vector<KeyFrame*> mvpKeyFrameOrigins;
 
     std::mutex mMutexMapUpdate;
 
@@ -76,6 +78,10 @@ public:
     //     return ellipsoids_points_;
 
     void AddObject(Object *obj);
+
+    void AddMapText(MapText* pMT);
+    void EraseMapText(MapText* pMT);
+    
 
 
     //MapObject* GetObjWithTrId(int tr_id);
@@ -98,6 +104,8 @@ protected:
     std::set<MapPoint*> mspMapPoints;
     std::set<KeyFrame*> mspKeyFrames;
     std::set<Object*> mspObjects;
+    std::vector<MapText*> mspMapTexts;
+    std::mutex mMutexMapTexts;
 
     std::vector<MapPoint*> mvpReferenceMapPoints;
 

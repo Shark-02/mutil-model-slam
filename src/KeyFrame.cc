@@ -53,7 +53,8 @@ KeyFrame::KeyFrame(Frame &F, Map *pMap, KeyFrameDatabase *pKFDB):
             mGrid[i][j] = F.mGrid[i][j];
     }
 
-    SetPose(F.mTcw);    
+    SetPose(F.mTcw); 
+    mvpMapTexts = std::vector<MapText*>(N, static_cast<MapText*>(NULL));   
     
     //ADDED FOR GRAPH
     if (F.graph){
@@ -630,6 +631,25 @@ void KeyFrame::SetBadFlag()
     //std::cout<<"SetBadFlag3"<<std::endl;
     mpKeyFrameDB->erase(this);
     //std::cout<<"SetBadFlag4"<<std::endl;
+}
+
+//文本
+void KeyFrame::AddMapTextMatch(MapText* pMT, const size_t &idx)
+{
+    std::unique_lock<std::mutex> lock(mMutexFeatures);
+    mvpMapTexts[idx] = pMT;
+}
+
+void KeyFrame::EraseMapTextMatch(const size_t &idx)
+{
+    std::unique_lock<std::mutex> lock(mMutexFeatures);
+    mvpMapTexts[idx] = static_cast<MapText*>(NULL);
+}
+
+std::vector<MapText*> KeyFrame::GetMapTextMatches()
+{
+    std::unique_lock<std::mutex> lock(mMutexFeatures);
+    return mvpMapTexts;
 }
 
 bool KeyFrame::isBad()

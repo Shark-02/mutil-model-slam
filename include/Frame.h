@@ -24,12 +24,14 @@
 #include<vector>
 
 #include "MapPoint.h"
+#include "MapText.h"
 #include "Thirdparty/DBoW2/DBoW2/BowVector.h"
 #include "Thirdparty/DBoW2/DBoW2/FeatureVector.h"
 #include "ORBVocabulary.h"
 #include "KeyFrame.h"
 #include "ORBextractor.h"
 #include "Ellipsoid.h" //ADDED YUTONG FOR VISUALIZE RELOCA
+#include "ImageDetections.h" //ADDED YU FOR TEXT
 #include "Graph.h"
 
 #include <opencv2/opencv.hpp>
@@ -42,6 +44,7 @@ namespace ORB_SLAM2
 class MapPoint;
 class KeyFrame;
 class Graph;
+class MapText;
 
 class Frame
 {
@@ -161,6 +164,7 @@ public:
     // Flag to identify outlier associations.
     std::vector<bool> mvbOutlier;
 
+
     // Keypoints are assigned to cells in a grid to reduce matching complexity when projecting MapPoints.
     static float mfGridElementWidthInv;
     static float mfGridElementHeightInv;
@@ -196,6 +200,12 @@ public:
     //ADDED YUTONG
     vector<Ellipsoid, Eigen::aligned_allocator<Ellipsoid>> ellipsoids; //FOR VISUALIZATION
     Graph* graph;
+
+    //ADDED byYU
+    std::vector<Detection::Ptr> vTextDetections; // 存储原始2D文本检测
+    std::vector<MapText*> mvpMapTexts;         // 存储与地图地标的匹配结果
+    std::vector<bool> mvbOutlierText;        // 存储匹配结果是否为外点
+
 
 
 
