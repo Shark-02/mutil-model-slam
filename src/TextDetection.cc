@@ -69,15 +69,15 @@ std::vector<Detection::Ptr> TextDetectionsFromFile::detect(const std::string &im
         double ymax = std::numeric_limits<double>::lowest();
         
         // 调试输出：打印quad的所有点坐标
-        std::cout << "Quad " << i << " points: ";
+        //std::cout << "Quad " << i << " points: ";
         for (auto &p : quads[i]) {
-            std::cout << "(" << p.x() << ", " << p.y() << ") ";
+            //std::cout << "(" << p.x() << ", " << p.y() << ") ";
             xmin = std::min(xmin, static_cast<double>(p.x()));
             ymin = std::min(ymin, static_cast<double>(p.y()));
             xmax = std::max(xmax, static_cast<double>(p.x()));
             ymax = std::max(ymax, static_cast<double>(p.y()));
         }
-        std::cout << std::endl;
+        //std::cout << std::endl;
         
         // 检查计算结果
         if (ymin == ymax && ymin == 0) {
@@ -88,7 +88,7 @@ std::vector<Detection::Ptr> TextDetectionsFromFile::detect(const std::string &im
         bb << xmin, ymin, xmax, ymax;
 
         // 调试输出bbox
-        std::cout << "Calculated bbox: " << xmin << ", " << ymin << ", " << xmax << ", " << ymax << std::endl;
+        //std::cout << "Calculated bbox: " << xmin << ", " << ymin << ", " << xmax << ", " << ymax << std::endl;
 
         // 转换 quad 点到 Eigen::Vector2d
         std::vector<Eigen::Vector2d> quad_pts;

@@ -30,6 +30,7 @@
 #include "KeyFrameDatabase.h"
 #include "Graph.h"
 #include "Object.h"
+#include "ImageDetections.h"
 
 #include <mutex>
 
@@ -206,6 +207,7 @@ public:
     std::vector<MapPoint*> mvpMapPoints;
     //文本
     std::vector<MapText*> mvpMapTexts;
+    const std::vector<Detection::Ptr> vTextDetections;
 
     //ADDED FOR GRAPH
     Graph* graph;

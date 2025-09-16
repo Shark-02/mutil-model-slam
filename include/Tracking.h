@@ -173,6 +173,8 @@ protected:
 
     void ObjectsInitialization();
 
+    void TextObjectsInitialization();
+
     // Map initialization for monocular
     void MonocularInitialization();
     void CreateInitialMapMonocular();
