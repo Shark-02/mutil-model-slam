@@ -173,7 +173,10 @@ protected:
 
     void ObjectsInitialization();
 
+    //文本相关
     void TextObjectsInitialization();
+    bool FitPlaneRANSAC(const std::vector<cv::Mat> &vPoints3D, Eigen::Vector4d &plane_theta, std::vector<bool> &vbInliers);
+    float PointToPlaneDistance(const cv::Mat &point, const Eigen::Vector4d &plane);
 
     // Map initialization for monocular
     void MonocularInitialization();
