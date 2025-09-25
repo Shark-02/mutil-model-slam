@@ -148,5 +148,96 @@ MapText* MapText::GetReplaced()
     return mpReplaced;
 }
 
+// ... (文件已有的内容)
+
+// **↓↓↓ 将以下整个函数复制并粘贴到文件末尾 ↓↓↓**
+
+/**
+ * @brief 计算并返回该文本地标在世界坐标系下的3D包围盒的8个角点
+ * @return std::vector<cv::Mat> 8个3x1的Mat，每个代表一个角点的世界坐标
+ */
+std::vector<cv::Mat> MapText::GetWorldBoundingBox()
+{
+    std::unique_lock<std::mutex> lock(mMutexFeatures);
+    std::vector<cv::Mat> bbox3D_world;
+
+    // --- 1. 从参考关键帧获取原始的2D检测框 ---
+    if (!mObservations.count(mpRefKF))
+        return bbox3D_world; // 如果没有参考帧的观测信息，则无法计算
+
+    size_t ref_det_idx = mObservations[mpRefKF];
+    if (ref_det_idx >= mpRefKF->vTextDetections.size())
+        return bbox3D_world;
+
+    const auto& det_bbox_vec = mpRefKF->vTextDetections[ref_det_idx]->bbox;
+    
+    // 获取2D检测框的四个角点 (像素坐标)
+    std::vector<cv::Point2f> corners_2d;
+    corners_2d.push_back(cv::Point2f(det_bbox_vec[0], det_bbox_vec[1])); // top-left
+    corners_2d.push_back(cv::Point2f(det_bbox_vec[2], det_bbox_vec[1])); // top-right
+    corners_2d.push_back(cv::Point2f(det_bbox_vec[2], det_bbox_vec[3])); // bottom-right
+    corners_2d.push_back(cv::Point2f(det_bbox_vec[0], det_bbox_vec[3])); // bottom-left
+
+    // --- 2. 将2D角点反投影到参考帧相机坐标系的3D平面上 ---
+    std::vector<cv::Mat> front_face_3d_cam;
+    const Eigen::Vector3d n_c = mThetaRef.head<3>(); // 平面法向量 (相机坐标系)
+    const double d_c = mThetaRef[3];               // 平面距离 (相机坐标系)
+
+    for (const auto& corner : corners_2d)
+    {
+        // 将2D像素坐标转换为归一化图像坐标
+        float u_norm = (corner.x - mpRefKF->cx) / mpRefKF->fx;
+        float v_norm = (corner.y - mpRefKF->cy) / mpRefKF->fy;
+        Eigen::Vector3d ray(u_norm, v_norm, 1.0);
+        ray.normalize();
+
+        // 射线与平面求交，得到3D点在相机坐标系下的坐标
+        // 平面方程: n·p + d = 0, 射线上点 p = t*ray
+        // t * (n·ray) + d = 0  =>  t = -d / (n·ray)
+        double n_dot_ray = n_c.dot(ray);
+        if (std::fabs(n_dot_ray) < 1e-6) continue; // 射线与平面平行，忽略
+
+        double t = -d_c / n_dot_ray;
+        Eigen::Vector3d p3D_cam_eig = t * ray;
+        
+        front_face_3d_cam.push_back((cv::Mat_<float>(3, 1) << p3D_cam_eig.x(), p3D_cam_eig.y(), p3D_cam_eig.z()));
+    }
+    
+    if (front_face_3d_cam.size() != 4) return bbox3D_world; // 必须要有4个角点
+
+    // --- 3. 根据平面法线方向，构造一个有厚度的包围盒 ---
+    const float BOX_THICKNESS = 0.02; // 假设文本有2cm的厚度
+    Eigen::Vector3d n_c_norm = n_c.normalized();
+    cv::Mat normal_cv = (cv::Mat_<float>(3, 1) << n_c_norm.x(), n_c_norm.y(), n_c_norm.z());
+    
+    std::vector<cv::Mat> back_face_3d_cam;
+    for (const auto& p_front : front_face_3d_cam) {
+        back_face_3d_cam.push_back(p_front - BOX_THICKNESS * normal_cv);
+    }
+    
+    // --- 4. 将包围盒的8个3D角点从参考帧相机坐标系转换到世界坐标系 ---
+    cv::Mat Twc_ref = mpRefKF->GetPoseInverse();
+    cv::Mat Rwc_ref = Twc_ref.rowRange(0, 3).colRange(0, 3);
+    cv::Mat Ow_ref = Twc_ref.rowRange(0, 3).col(3);
+
+    for (const auto& p_cam : front_face_3d_cam) {
+        bbox3D_world.push_back(Rwc_ref * p_cam + Ow_ref);
+    }
+    for (const auto& p_cam : back_face_3d_cam) {
+        bbox3D_world.push_back(Rwc_ref * p_cam + Ow_ref);
+    }
+    
+    return bbox3D_world;
+}
+
+int MapText::GetIndexInKeyFrame(KeyFrame* pKF)
+{
+    std::unique_lock<std::mutex> lock(mMutexFeatures);
+    if(mObservations.count(pKF))
+        return mObservations[pKF];
+    else
+        return -1;
+}
+
 
 } // namespace ORB_SLAM2

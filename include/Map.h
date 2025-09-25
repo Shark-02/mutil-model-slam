@@ -40,7 +40,7 @@ class MapObject;
 class Graph;
 class Object;
 class MapText;
-
+class Frame;
 class Map
 {
 public:
@@ -55,6 +55,7 @@ public:
     int GetLastBigChangeIdx();
 
     std::vector<KeyFrame*> GetAllKeyFrames();
+    std::vector<KeyFrame*> GetNeighborKF(const Frame &F);
     std::vector<MapPoint*> GetAllMapPoints();
     std::vector<Object*> GetAllObjects();
     std::vector<MapText*> GetAllMapTexts();

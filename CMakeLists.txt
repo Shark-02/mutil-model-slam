@@ -91,6 +91,7 @@ src/Object.cc
 src/ObjectMatcher.cc
 src/TextDetection.cc
 src/MapText.cc
+src/TextMatcher.cc
 )
 
 target_link_libraries(${PROJECT_NAME}

@@ -174,7 +174,8 @@ protected:
     void ObjectsInitialization();
 
     //文本相关
-    void TextObjectsInitialization();
+    void CreateNewTextLandmarks(KeyFrame* pKF);
+    void UpdateLocalMapTexts(vector<KeyFrame*> neighbor_kfs);
     bool FitPlaneRANSAC(const std::vector<cv::Mat> &vPoints3D, Eigen::Vector4d &plane_theta, std::vector<bool> &vbInliers);
     float PointToPlaneDistance(const cv::Mat &point, const Eigen::Vector4d &plane);
 
@@ -236,6 +237,7 @@ protected:
     KeyFrame* mpReferenceKF;
     std::vector<KeyFrame*> mvpLocalKeyFrames;
     std::vector<MapPoint*> mvpLocalMapPoints;
+    std::vector<MapText*> mvpLocalMapTexts;
     
     // System
     System* mpSystem;

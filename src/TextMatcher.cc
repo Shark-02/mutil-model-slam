@@ -1,0 +1,172 @@
+// TextMatcher.cc
+
+#include "TextMatcher.h"
+#include <opencv2/imgproc/imgproc.hpp> // For cv::matchTemplate and cv::resize
+#include <algorithm> // For std::min/max
+
+namespace ORB_SLAM2
+{
+
+TextMatcher::TextMatcher(float znccThreshold, float minIoU, float minTextSimilarity)
+    : mfZNCCThreshold(znccThreshold), mfMinIoU(minIoU), mfMinTextSimilarity(minTextSimilarity)
+{
+}
+
+// TextMatcher.cc
+
+int TextMatcher::SearchTextByProjection(Frame &F, const std::vector<MapText*> &vpMapTexts)
+{
+    int nMatches = 0;  
+    // 使用一个布尔向量来确保每个2D检测框只被匹配一次
+    std::vector<bool> vbMatchedDetection(F.vTextDetections.size(), false);
+
+    // 遍历所有可见的3D文本地标
+    for (MapText* pMT : vpMapTexts)
+    {
+        if (!pMT || pMT->isBad())
+            continue;
+
+        // 阶段一: 几何投影
+        cv::Rect2f proj_bbox;
+        if (!ProjectTextToImage(pMT, F.mTcw, F.mK, proj_bbox, F))
+            continue;
+
+        // 阶段二: 外观验证 (ZNCC预筛选)
+        KeyFrame* pRefKF = pMT->GetReferenceKeyFrame();
+        if(!pRefKF) continue;
+        size_t ref_det_idx = pMT->GetIndexInKeyFrame(pRefKF);
+        if(ref_det_idx >= pRefKF->vTextDetections.size()) continue;
+        const auto& ref_det_bbox_vec = pRefKF->vTextDetections[ref_det_idx]->bbox;
+        cv::Rect2f ref_bbox(ref_det_bbox_vec[0], ref_det_bbox_vec[1], ref_det_bbox_vec[2] - ref_det_bbox_vec[0], ref_det_bbox_vec[3] - ref_det_bbox_vec[1]);
+        //TODO 暂时注释zccc校验
+        //float zncc_score = CalculateZNCC(pRefKF->mImGray, ref_bbox, F.mImGray, proj_bbox);
+        //if (zncc_score < mfZNCCThreshold)
+            //continue;
+
+        // 阶段三: 数据关联 (IoU + 语义)
+        float max_score = 0.0f;
+        int best_match_idx = -1;
+
+        for (size_t i = 0; i < F.vTextDetections.size(); ++i)
+        {
+            if (vbMatchedDetection[i]) continue;
+
+            const auto& det = F.vTextDetections[i];
+            const auto& det_bbox_vec = det->bbox;
+            cv::Rect2f det_bbox(det_bbox_vec[0], det_bbox_vec[1], det_bbox_vec[2] - det_bbox_vec[0], det_bbox_vec[3] - det_bbox_vec[1]);
+
+            float iou = CalculateIoU(proj_bbox, det_bbox);
+            if (iou < mfMinIoU) continue;
+
+            float text_sim = 1.0f - (float)LevenshteinDistance(pMT->mTextInfo.mean, det->text) / std::max(pMT->mTextInfo.mean.length(), det->text.length());
+            if (text_sim < mfMinTextSimilarity) continue;
+
+            float current_score = iou + text_sim;
+
+            if (current_score > max_score)
+            {
+                max_score = current_score;
+                best_match_idx = i;
+            }
+        }
+
+        // 如果找到了有效的最佳匹配
+        if (best_match_idx != -1)
+        {
+            F.mvpMapTexts[best_match_idx] = pMT;
+
+            vbMatchedDetection[best_match_idx] = true; // 标记此检测框已被使用
+            nMatches++;
+            std::cout << "Frame " << F.mnId << " matched detection " << best_match_idx 
+          << " with MapText " << pMT->mnId << std::endl;
+        }
+    }
+    return nMatches;
+}
+
+
+bool TextMatcher::ProjectTextToImage(MapText* pMT, const cv::Mat& Tcw, const cv::Mat& K, 
+                                     cv::Rect2f& out_bbox, const Frame& F)
+{
+    std::vector<cv::Mat> bbox3D_world = pMT->GetWorldBoundingBox();
+    if (bbox3D_world.empty()) return false;
+
+    float min_x = F.mnMaxX, max_x = F.mnMinX;
+    float min_y = F.mnMaxY, max_y = F.mnMinY;
+    bool bInFrustum = false;
+
+    for (const auto& p3D_world : bbox3D_world)
+    {
+        cv::Mat p3D_cam = Tcw.rowRange(0, 3).colRange(0, 3) * p3D_world + Tcw.rowRange(0, 3).col(3);
+        const float z = p3D_cam.at<float>(2);
+
+        if (z < 0.1) continue;
+        
+        const float inv_z = 1.0f / z;
+        const float u = K.at<float>(0, 0) * p3D_cam.at<float>(0) * inv_z + K.at<float>(0, 2);
+        const float v = K.at<float>(1, 1) * p3D_cam.at<float>(1) * inv_z + K.at<float>(1, 2);
+
+        if (u > F.mnMinX && u < F.mnMaxX && v > F.mnMinY && v < F.mnMaxY)
+        {
+            bInFrustum = true;
+            min_x = std::min(min_x, u); max_x = std::max(max_x, u);
+            min_y = std::min(min_y, v); max_y = std::max(max_y, v);
+        }
+    }
+
+    if (!bInFrustum) return false;
+
+    out_bbox = cv::Rect2f(min_x, min_y, max_x - min_x, max_y - min_y);
+    return true;
+}
+
+float TextMatcher::CalculateIoU(const cv::Rect2f& r1, const cv::Rect2f& r2)
+{
+    cv::Rect2f intersection = r1 & r2;
+    float intersection_area = intersection.area();
+    if (intersection_area <= 0) return 0.0f;
+    float union_area = r1.area() + r2.area() - intersection_area;
+    return intersection_area / union_area;
+}
+
+int TextMatcher::LevenshteinDistance(const std::string &s1, const std::string &s2) {
+    const std::size_t len1 = s1.size(), len2 = s2.size();
+    std::vector<unsigned int> col(len2 + 1), prevCol(len2 + 1);
+    for (unsigned int i = 0; i < prevCol.size(); i++) prevCol[i] = i;
+    for (unsigned int i = 0; i < len1; i++) {
+        col[0] = i + 1;
+        for (unsigned int j = 0; j < len2; j++)
+            col[j + 1] = std::min({ prevCol[j + 1] + 1, col[j] + 1, prevCol[j] + (s1[i] == s2[j] ? 0 : 1) });
+        col.swap(prevCol);
+    }
+    return prevCol[len2];
+}
+
+float TextMatcher::CalculateZNCC(const cv::Mat& img1, const cv::Rect2f& roi1, 
+                                 const cv::Mat& img2, const cv::Rect2f& roi2)
+{
+    // 检查ROI是否有效
+    if(roi1.width <= 0 || roi1.height <= 0 || roi2.width <= 0 || roi2.height <= 0) return 0.0f;
+    if(roi1.x < 0 || roi1.y < 0 || roi1.x + roi1.width > img1.cols || roi1.y + roi1.height > img1.rows) return 0.0f;
+    if(roi2.x < 0 || roi2.y < 0 || roi2.x + roi2.width > img2.cols || roi2.y + roi2.height > img2.rows) return 0.0f;
+
+    // 提取图像块
+    cv::Mat patch1 = img1(roi1);
+    cv::Mat patch2 = img2(roi2);
+
+    if (patch1.empty() || patch2.empty()) return 0.0f;
+
+    // 将两个图像块缩放到相同尺寸以便比较
+    cv::Mat patch2_resized;
+    cv::resize(patch2, patch2_resized, patch1.size());
+
+    // 使用OpenCV的matchTemplate计算ZNCC
+    cv::Mat result;
+    cv::matchTemplate(patch1, patch2_resized, result, CV_TM_CCOEFF_NORMED);
+    
+    // result是一个1x1的矩阵，其值就是ZNCC得分
+    return result.at<float>(0, 0);
+}
+
+
+} // namespace ORB_SLAM2

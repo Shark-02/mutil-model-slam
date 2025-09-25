@@ -204,7 +204,15 @@ public:
     //ADDED byYU
     std::vector<Detection::Ptr> vTextDetections; // 存储原始2D文本检测
     std::vector<MapText*> mvpMapTexts;         // 存储与地图地标的匹配结果
+    //mvpMapTexts[i]：是一个指向 MapText 对象的指针。如果这个指针有效，就表示第 i 个 KeyPoint 是属于这个 MapText 平面的一部分。
+    vector<int> vTextDeteCorMap;  // 存储每个文本检测对应的MapText的索引(地图中的唯一ID），-1表示该检测未匹配到任何MapText
     std::vector<bool> mvbOutlierText;        // 存储匹配结果是否为外点
+    // 使用std::map来存储文本观测关系
+    // Key: 指向3D地图文本对象的指针
+    // Value: 观测到这个3D地标的所有2D检测框的索引列表
+    std::map<MapText*, std::vector<int>> mTextObservations;
+    cv::Mat mImGray;
+
 
 
 

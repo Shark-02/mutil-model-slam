@@ -206,8 +206,13 @@ public:
     // MapPoints associated to keypoints
     std::vector<MapPoint*> mvpMapPoints;
     //文本
+    //MapText associated to keypoints
     std::vector<MapText*> mvpMapTexts;
+    // TextDetections associated to Maptexts
+    vector<int> vTextDeteCorMap;
     const std::vector<Detection::Ptr> vTextDetections;
+    std::map<MapText*, std::vector<int>> mTextObservations;
+    const cv::Mat mImGray;
 
     //ADDED FOR GRAPH
     Graph* graph;

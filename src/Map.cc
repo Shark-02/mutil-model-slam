@@ -115,6 +115,8 @@ long unsigned int Map::GetMaxKFid()
     return mnMaxKFid;
 }
 
+
+
 void Map::clear()
 {
     for(set<MapPoint*>::iterator sit=mspMapPoints.begin(), send=mspMapPoints.end(); sit!=send; sit++)
@@ -178,6 +180,61 @@ std::vector<MapText*> Map::GetAllMapTexts()
     
     // 返回容器的副本
     return mspMapTexts;
+}
+
+
+/**
+ * @brief 根据当前普通帧，获取时间上最近的两个关键帧 (std::set)
+ * @param F 当前普通帧
+ * @return 包含最多两个KeyFrame指针的vector，[0]是最新的, [1]是次新的
+ */
+std::vector<KeyFrame*> Map::GetNeighborKF(const Frame &F)
+{
+    std::unique_lock<std::mutex> lock(mMutexMap); // 加锁以安全访问mspKeyFrames
+    
+    KeyFrame* pClosestKF = nullptr;
+    KeyFrame* pSecondClosestKF = nullptr;
+    int minDiff = INT_MAX;
+    int secondMinDiff = INT_MAX;
+    long unsigned int FId = F.mnId;
+
+    // 遍历set中的所有关键帧
+    for (KeyFrame* pKF : mspKeyFrames)
+    {
+        if (!pKF || pKF->isBad()) continue;
+
+        long unsigned int KFId = pKF->mnFrameId;
+        int IdDiff = FId - KFId;
+        
+        if (IdDiff < 0) continue; // 只考虑在当前帧之前的关键帧
+
+        // 核心逻辑：同时更新最近和次近的关键帧
+        if (IdDiff < minDiff)
+        {
+            // 如果找到了一个更近的，那么之前的“最近”就变成了“次近”
+            secondMinDiff = minDiff;
+            pSecondClosestKF = pClosestKF;
+            
+            // 更新“最近”
+            minDiff = IdDiff;
+            pClosestKF = pKF;
+        }
+        else if (IdDiff < secondMinDiff)
+        {
+            // 如果只是比“次近”的更近，那就只更新“次近”
+            secondMinDiff = IdDiff;
+            pSecondClosestKF = pKF;
+        }
+    }
+    
+    std::vector<KeyFrame*> vResult;
+    // 将找到的结果添加到返回向量中
+    if (pClosestKF)
+        vResult.push_back(pClosestKF);
+    if (pSecondClosestKF)
+        vResult.push_back(pSecondClosestKF);
+    
+    return vResult;
 }
 
 } //namespace ORB_SLAM

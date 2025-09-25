@@ -175,6 +175,8 @@ void Viewer::Run()
         //std::cout<<"DrawMapObjects"<<std::endl;
         if (menuShowObjects)
             mpMapDrawer->DrawMapObjects();
+            mpMapDrawer->DrawTextLandmarks();
+
 
         if (menuDistEstim)
             mpMapDrawer->DrawDistanceEstimation(mpTracker->GetCurrentMeanDepth(), mpTracker->mCurrentFrame.mTcw);

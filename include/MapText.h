@@ -57,6 +57,8 @@ public:
     void AddObservation(KeyFrame* pKF, size_t idx);
     void EraseObservation(KeyFrame* pKF);
     std::map<KeyFrame*, size_t> GetObservations();
+    int GetIndexInKeyFrame(KeyFrame* pKF);
+    std::vector<cv::Mat> GetWorldBoundingBox();
     int Observations();
 
     // 状态管理

@@ -67,6 +67,8 @@ public:
     void SetReferenceKeyFrame(KeyFrame *pKF);
     void GetCurrentOpenGLCameraMatrix(pangolin::OpenGlMatrix &M);
     void DrawMapObjects();
+    //ADDED BY YU FOR DRAWING TEXTOBJ
+    void DrawTextLandmarks();
     void SetUseCategoryColors(bool use_cat_cols) {
         use_category_cols_ = use_cat_cols;
     }

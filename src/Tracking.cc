@@ -40,6 +40,7 @@
 #include "Utils.h"
 #include "Graph.h"
 #include "ObjectMatcher.h"
+#include "TextMatcher.h"
 #include <iostream>
 
 #include <mutex>
@@ -304,9 +305,10 @@ cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const d
     // 单独保存文本检测列表以备绘制/其它文本专用逻辑使用
     current_frame_text_detections_ = text_detections; 
     mCurrentFrame.vTextDetections = current_frame_text_detections_;
-    // 初始化文本匹配结果容器 (大小与当前帧特征点数N对应)
-    mCurrentFrame.mvpMapTexts.resize(mCurrentFrame.N, static_cast<MapText*>(NULL));
-    mCurrentFrame.mvbOutlierText.resize(mCurrentFrame.N, false);
+    mCurrentFrame.vTextDeteCorMap.resize(mCurrentFrame.vTextDetections.size(), -1);
+    // 初始化文本匹配结果容器
+    mCurrentFrame.mvpMapTexts.resize(mCurrentFrame.vTextDetections.size(), static_cast<MapText*>(NULL));
+    //mCurrentFrame.mvbOutlierText.resize(mCurrentFrame.N, false);
 
     current_depth_data_per_det_.clear();
     current_depth_data_per_det_.resize(current_frame_detections_.size(), std::make_pair(0.0f, 0.0f));
@@ -546,7 +548,7 @@ void Tracking::Track(bool use_object)
             if(use_object)
                 ObjectsInitialization();
             if(use_text)
-                TextObjectsInitialization();
+                CreateNewTextLandmarks(mpLastKeyFrame);
         }
         else
             MonocularInitialization();
@@ -908,86 +910,10 @@ void Tracking::Track(bool use_object)
 
                 //ADDED BY YU FOR CREATING TEXT OBJECTS
                 if(use_text){
-                    std::cout << "\n[Text Creation] 新关键帧 " << kf->mnId << " 已创建。正在检查新的文本检测..." << std::endl;       
-                    int text_idx_in_kf = 0;
-                    // 遍历新关键帧中的所有文本检测
-                    for (const auto& det : kf->vTextDetections)
-                    {
-                        // 简单检查该文本检测是否已关联到一个地图文本
-                        // TODO(可以优化这个检查逻辑)
-                        bool alreadyCreated = false;
-                        const auto vIndicesCheck = kf->GetFeaturesInBox(det->bbox[0], det->bbox[2], det->bbox[1], det->bbox[3]);
-                        for(const auto& idx : vIndicesCheck) {
-                            if(kf->mvpMapTexts[idx]) {
-                                alreadyCreated = true;
-                                break;
-                            }
-                        }
-                        if(alreadyCreated) {
-                            std::cout << "  [Text Creation] 文本 '" << det->text << "' 似乎已被跟踪，跳过创建。" << std::endl;
-                            continue;
-                        }
-
-                        // 1. 在检测框内收集3D地图点
-                        std::vector<cv::Mat> vPoints3D;
-                        const auto vIndices = kf->GetFeaturesInBox(det->bbox[0], det->bbox[2], det->bbox[1], det->bbox[3]);
-                        for (const auto& idx : vIndices) {
-                            MapPoint* pMP = kf->GetMapPoint(idx);
-                            if (pMP && !pMP->isBad()) {
-                                vPoints3D.push_back(pMP->GetWorldPos());
-                            }
-                        }
-                        
-                        std::cout << "  [Text Creation] 对于文本 '" << det->text << "', 在其包围盒内找到了 " << vPoints3D.size() << " 个地图点。" << std::endl;
-
-                        // 2. 使用RANSAC拟合平面
-                        const int MIN_POINTS_FOR_PLANE = 5;
-                        if (vPoints3D.size() < MIN_POINTS_FOR_PLANE) {
-                            std::cout << "  [Text Creation] 地图点数量不足(<" << MIN_POINTS_FOR_PLANE << ")，跳过。" << std::endl;
-                            text_idx_in_kf++;
-                            continue;
-                        }
-
-                        Eigen::Vector4d plane_theta_world;
-                        std::vector<bool> vbInliers;
-                        bool bPlaneFound = FitPlaneRANSAC(vPoints3D, plane_theta_world, vbInliers);
-
-                        if (bPlaneFound)
-                        {
-                            int inlier_count = std::count(vbInliers.begin(), vbInliers.end(), true);
-                            std::cout << "  [Text Creation] ^^^ 成功! 为 '" << det->text << "' 找到了平面，内点数: " << inlier_count << "。正在创建MapText对象。" << std::endl;
-                            
-                            TextInfo textInfo;
-                            textInfo.mean = det->text;
-                            textInfo.score = det->score;
-
-                            // 3. 将世界坐标系下的平面方程转换到参考关键帧的相机坐标系下
-                            cv::Mat Twc = kf->GetPoseInverse();
-                            Eigen::Matrix3d Rwc;
-                            cv::cv2eigen(Twc.rowRange(0,3).colRange(0,3), Rwc);
-                            Eigen::Vector3d twc;
-                            cv::cv2eigen(Twc.rowRange(0,3).col(3), twc);
-
-                            Eigen::Vector3d n_w = plane_theta_world.head<3>();
-                            double d_w = plane_theta_world[3];
-                            Eigen::Vector3d n_c = Rwc.transpose() * n_w;
-                            double d_c = d_w + n_w.dot(twc);
-                            
-                            Eigen::Vector4d plane_theta_ref(n_c.x(), n_c.y(), n_c.z(), d_c);
-                            
-                            // 4. 创建并注册新的MapText
-                            MapText* pNewMT = new MapText(kf, plane_theta_ref, textInfo, mpMap);
-                            mpMap->AddMapText(pNewMT);
-                            pNewMT->AddObservation(kf, text_idx_in_kf); // 暂时使用文本检测的索引作为虚拟索引
-                        } else {
-                            std::cout << "  [Text Creation] !!! RANSAC拟合平面失败。" << std::endl;
-                        }
-                        text_idx_in_kf++;
-                    } // 遍历文本检测结束
-                } //if(kf)--end
-            }
-
-        }
+                    CreateNewTextLandmarks(kf);
+                } // 遍历文本检测结束
+            } //if(kf)--end
+        }   
 
         // Reset if the camera get lost soon after initialization
         if(mState==LOST)
@@ -1438,6 +1364,13 @@ bool Tracking::TrackWithMotionModel()
 
     if(nmatches<20)
         return false;
+  
+    // ADDED BY YU FOR Search TEXT LANDMARKS
+    UpdateLocalMapTexts(mpMap->GetNeighborKF(mCurrentFrame));
+    TextMatcher text_matcher(0.4, 0.6);
+    std::fill(mCurrentFrame.mvpMapTexts.begin(), mCurrentFrame.mvpMapTexts.end(), static_cast<MapText*>(NULL));
+    std::cout << "候选地标数量: " << mvpLocalMapTexts.size() << std::endl; // <-- 增加这行
+    text_matcher.SearchTextByProjection(mCurrentFrame,mvpLocalMapTexts); 
 
     // Optimize frame pose with all matches
     Optimizer::PoseOptimization(&mCurrentFrame);
@@ -2142,27 +2075,27 @@ bool Tracking::Relocalization()
 }
 
 //ADDED BY YU FOR TEXT INIT
-// 辅助函数：计算点到平面的距离
-float Tracking::PointToPlaneDistance(const cv::Mat &point, const Eigen::Vector4d &plane) {
-    return std::fabs(plane[0] * point.at<float>(0) +
-                     plane[1] * point.at<float>(1) +
-                     plane[2] * point.at<float>(2) +
-                     plane[3]) /
-           sqrt(plane[0] * plane[0] + plane[1] * plane[1] + plane[2] * plane[2]);
+// 辅助函数：计算点到平面的距离 (世界坐标系下的点)
+float Tracking::PointToPlaneDistance(const cv::Mat &point_world, const Eigen::Vector4d &plane_world) {
+    return std::fabs(plane_world[0] * point_world.at<float>(0) +
+                     plane_world[1] * point_world.at<float>(1) +
+                     plane_world[2] * point_world.at<float>(2) +
+                     plane_world[3]) /
+           sqrt(plane_world[0] * plane_world[0] + plane_world[1] * plane_world[1] + plane_world[2] * plane_world[2]);
 }
 
-// RANSAC平面拟合函数
-bool Tracking::FitPlaneRANSAC(const std::vector<cv::Mat>& vPoints3D, Eigen::Vector4d& best_plane, std::vector<bool>& vbInliers)
+// RANSAC平面拟合函数 (针对稀疏点TODO)
+bool Tracking::FitPlaneRANSAC(const std::vector<cv::Mat>& vPoints3D_world, Eigen::Vector4d& best_plane, std::vector<bool>& vbInliers)
 {
-    const int nPoints = vPoints3D.size();
-    if (nPoints < 5) // 如果点太少，无法稳定拟合
+    const int nPoints = vPoints3D_world.size();
+    if (nPoints < 3) // 至少需要3个点
         return false;
 
     const int nIterations = 100;
-    const float th = 0.02; // 2cm 内被认为是内点
+    const float th = 0.05; // 5cm 内被认为是内点 (可以根据场景调整)
     int maxInliers = 0;
 
-    vbInliers.resize(nPoints, false);
+    std::vector<int> bestInlierIndices;
 
     for (int iter = 0; iter < nIterations; ++iter)
     {
@@ -2173,43 +2106,48 @@ bool Tracking::FitPlaneRANSAC(const std::vector<cv::Mat>& vPoints3D, Eigen::Vect
         if (idx1 == idx2 || idx1 == idx3 || idx2 == idx3) continue;
 
         // 2. 计算平面方程 Ax+By+Cz+D=0
-        cv::Mat p1 = vPoints3D[idx1];
-        cv::Mat p2 = vPoints3D[idx2];
-        cv::Mat p3 = vPoints3D[idx3];
+        cv::Mat p1 = vPoints3D_world[idx1];
+        cv::Mat p2 = vPoints3D_world[idx2];
+        cv::Mat p3 = vPoints3D_world[idx3];
 
         cv::Mat v1 = p2 - p1;
         cv::Mat v2 = p3 - p1;
         cv::Mat normal = v1.cross(v2);
-        cv::normalize(normal, normal);
+        cv::normalize(normal, normal); // 确保是单位法向量
 
         float A = normal.at<float>(0);
         float B = normal.at<float>(1);
         float C = normal.at<float>(2);
         float D = - (A * p1.at<float>(0) + B * p1.at<float>(1) + C * p1.at<float>(2));
-
         Eigen::Vector4d current_plane(A, B, C, D);
 
         // 3. 计算内点数量
-        int currentInliers = 0;
+        int currentInliersCount = 0;
+        std::vector<int> currentInlierIndices;
         for (int i = 0; i < nPoints; ++i) {
-            if (PointToPlaneDistance(vPoints3D[i], current_plane) < th) {
-                currentInliers++;
+            if (PointToPlaneDistance(vPoints3D_world[i], current_plane) < th) {
+                currentInliersCount++;
+                currentInlierIndices.push_back(i);
             }
         }
 
         // 4. 更新最佳模型
-        if (currentInliers > maxInliers) {
-            maxInliers = currentInliers;
+        if (currentInliersCount > maxInliers) {
+            maxInliers = currentInliersCount;
             best_plane = current_plane;
+            bestInlierIndices = currentInlierIndices;
         }
     }
 
-    // 5. 使用所有找到的内点重新拟合平面 (可选，但能提高精度)
-    if (maxInliers > 5) { // 至少需要超过5个内点才认为拟合成功
-        for (int i = 0; i < nPoints; ++i) {
-            if (PointToPlaneDistance(vPoints3D[i], best_plane) < th) {
-                vbInliers[i] = true;
-            }
+    // 5. 判断拟合是否成功
+    if (maxInliers >= 3) {
+        // (推荐) 使用所有找到的内点重新拟合平面以提高精度
+        // 这里可以使用PCA或SVD来做更精确的拟合，一个简单的均值法也可以
+        // 此处为了简单，我们直接使用RANSAC找到的最佳平面
+
+        vbInliers.assign(nPoints, false);
+        for(int idx : bestInlierIndices) {
+            vbInliers[idx] = true;
         }
         return true;
     }
@@ -2217,92 +2155,110 @@ bool Tracking::FitPlaneRANSAC(const std::vector<cv::Mat>& vPoints3D, Eigen::Vect
     return false;
 }
 
-void Tracking::TextObjectsInitialization()
+
+/**
+ * @brief (可复用) 为指定关键帧中尚未关联的文本检测创建新的MapText地标
+ * @param pKF 需要处理的关键帧
+ */
+void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
 {
-    // --- 诊断点 1: 函数入口 ---
-    std::cout << "\n\n[Text Init DEBUG] >>> TextObjectsInitialization() function has been successfully called." << std::endl;
-
-    KeyFrame* pKFini = mpLastKeyFrame;
-    if (!pKFini) {
-        std::cout << "[Text Init DEBUG] !!! FAILED: Initial KeyFrame (mpLastKeyFrame) is NULL! Function is exiting." << std::endl;
+    // 基本检查
+    if (!pKF || pKF->vTextDetections.empty())
         return;
-    }
-    std::cout << "[Text Init DEBUG] Initial KeyFrame ID is: " << pKFini->mnId << std::endl;
 
-    // --- 诊断点 2: 检查关键帧是否真的收到了文本检测数据 ---
-    if (pKFini->vTextDetections.empty()) {
-        std::cout << "[Text Init DEBUG] !!! FAILED: The initial KeyFrame has NO text detections stored in its vTextDetections member. Function is exiting." << std::endl;
-        return;
-    }
-    std::cout << "[Text Init DEBUG] Found " << pKFini->vTextDetections.size() << " text detections in the initial KeyFrame. Starting loop..." << std::endl;
-
-    int text_idx = 0;
-    for (const auto& det : pKFini->vTextDetections)
+    // 遍历该关键帧中的所有文本检测
+    for (size_t i = 0; i < pKF->vTextDetections.size(); ++i)
     {
-        std::cout << "\n[Text Init DEBUG] -- Processing detection #" << text_idx++ << ": '" << det->text << "' --" << std::endl;
+        // 如果这个检测框已经通过TextMatcher关联到了一个已有的地标，则跳过
+        if (pKF->mvpMapTexts[i])
+        {
+            continue;
+        }
 
-        // 1. 在检测框内收集3D地图点
-        std::vector<cv::Mat> vPoints3D;
-        const auto vIndices = pKFini->GetFeaturesInBox(det->bbox[0], det->bbox[2], det->bbox[1], det->bbox[3]);
-        
-        std::cout << "[Text Init DEBUG] Found " << vIndices.size() << " feature indices within the bounding box." << std::endl;
+        // --- 对于未被关联的检测，执行完整的地标创建流程 ---
+        const auto& det = pKF->vTextDetections[i];
+        const auto& bbox = det->bbox;
 
-        for (const auto& idx : vIndices) {
-            MapPoint* pMP = pKFini->GetMapPoint(idx);
-            if (pMP && !pMP->isBad()) {
-                vPoints3D.push_back(pMP->GetWorldPos());
+        // 1. 在检测框内寻找ORB特征点
+        const std::vector<size_t> vFeatureIndices = pKF->GetFeaturesInBox(bbox[0], bbox[2], bbox[1], bbox[3]);
+        if (vFeatureIndices.size() < 3) continue;
+
+        // 2. 恢复这些特征点的3D世界坐标
+        std::vector<cv::Mat> vPoints3D_world;
+        for (const size_t& feat_idx : vFeatureIndices)
+        {
+            const float d = pKF->mvDepth[feat_idx];
+            if (d > 0.1 && d < 10.0) {
+                cv::Mat p3D_world = pKF->UnprojectStereo(feat_idx);
+                if(!p3D_world.empty())
+                    vPoints3D_world.push_back(p3D_world);
             }
         }
-
-        std::cout << "[Text Init DEBUG] Collected " << vPoints3D.size() << " valid 3D MapPoints for this detection." << std::endl;
-
-        // --- 诊断点 3: 检查点云数量是否满足阈值 ---
-        const int MIN_POINTS_FOR_PLANE = 5; // 我们把阈值定义为一个常量
-        if (vPoints3D.size() < MIN_POINTS_FOR_PLANE) {
-            std::cout << "[Text Init DEBUG] !!! SKIPPING: Not enough MapPoints (< " << MIN_POINTS_FOR_PLANE << ") to fit a plane." << std::endl;
-            continue; // 跳到下一个检测框
-        }
-
-        // 2. RANSAC平面拟合
-        std::cout << "[Text Init DEBUG] Attempting to fit a plane with RANSAC..." << std::endl;
-        Eigen::Vector4d plane_theta;
-        std::vector<bool> vbInliers;
-        bool bPlaneFound = FitPlaneRANSAC(vPoints3D, plane_theta, vbInliers);
+        if (vPoints3D_world.size() < 3) continue;
         
-        if (bPlaneFound)
+        // 3. RANSAC平面拟合
+        Eigen::Vector4d plane_world;
+        std::vector<bool> vbInliers; 
+        if (FitPlaneRANSAC(vPoints3D_world, plane_world, vbInliers)) 
         {
-            int inlier_count = std::count(vbInliers.begin(), vbInliers.end(), true);
-            std::cout << "[Text Init DEBUG] ^^^ SUCCESS! Plane found for text '" << det->text << "' with " << inlier_count << " inliers. Creating MapText object." << std::endl;
-
+            // 4. 创建新的MapText对象
             TextInfo textInfo;
             textInfo.mean = det->text;
             textInfo.score = det->score;
+            MapText* pNewMT = new MapText(pKF, plane_world, textInfo, mpMap);
 
-            // 坐标系变换...
-            cv::Mat Twc = pKFini->GetPoseInverse();
-            Eigen::Matrix3d Rwc;
-            cv::cv2eigen(Twc.rowRange(0,3).colRange(0,3), Rwc);
-            Eigen::Vector3d twc;
-            cv::cv2eigen(Twc.rowRange(0,3).col(3), twc);
-
-            Eigen::Vector3d n_w = plane_theta.head<3>();
-            double d_w = plane_theta[3];
-            Eigen::Vector3d n_c = Rwc.transpose() * n_w;
-            double d_c = d_w + n_w.dot(twc);
-            
-            Eigen::Vector4d plane_theta_ref(n_c.x(), n_c.y(), n_c.z(), d_c);
-            
-            // 创建和注册地标...
-            MapText* pNewMT = new MapText(pKFini, plane_theta_ref, textInfo, mpMap);
+            // 5. 将地标添加到地图，并建立关联
             mpMap->AddMapText(pNewMT);
-            pNewMT->AddObservation(pKFini, text_idx - 1);
-        }
-        else
-        {
-            std::cout << "[Text Init DEBUG] !!! FAILED to fit a plane with RANSAC." << std::endl;
+            pKF->mvpMapTexts[i] = pNewMT; // 将新创建的地标指针存入
+            pNewMT->AddObservation(pKF, i);          
+            // TODO,暂时不用vTextDeteCorMap，现在是多余的了，因为mvpMapTexts已经包含了完整信息
+            // pKF->vTextDeteCorMap[i] = pNewMT->mnId; 
         }
     }
-    std::cout << "[Text Init DEBUG] <<< TextObjectsInitialization() finished processing all detections. <<<\n" << std::endl;
+}
+
+//ADDED BY YU FOR TO SEARCH LOCAL TEXTOBJS
+void Tracking::UpdateLocalMapTexts(vector<KeyFrame*> neighbor_kfs)
+{
+    // 1. 清空上一帧的局部文本地标列表
+    mvpLocalMapTexts.clear();
+
+    // 2. 遍历所有局部关键帧，将它们观测到的所有文本地标收集起来 (包含重复项)
+    //    mvpLocalKeyFrames 是由 UpdateLocalKeyFrames 函数更新的
+    for (KeyFrame* pKF : neighbor_kfs)
+    {
+        if (!pKF) continue;
+
+        // 获取当前关键帧观测到的所有MapText
+        const std::vector<MapText*> vpMapTextsInKF = pKF->GetMapTextMatches();
+
+        // 将它们全部添加到总的列表中
+        for (MapText* pMT : vpMapTextsInKF)
+        {
+            if (pMT && !pMT->isBad())
+            {
+                mvpLocalMapTexts.push_back(pMT);
+            }
+        }
+    }
+
+    // 3. 通过排序和unique来移除重复的地标指针
+    if (mvpLocalMapTexts.empty())
+        return;
+
+    // a. 排序 (unique的前提是相邻元素重复)
+    std::sort(mvpLocalMapTexts.begin(), mvpLocalMapTexts.end());
+
+    // b. 使用unique将重复的元素移动到vector尾部，并返回指向第一个重复元素的迭代器
+    auto end_unique = std::unique(mvpLocalMapTexts.begin(), mvpLocalMapTexts.end());
+
+    // c. 删除从该迭代器到末尾的所有重复元素
+    mvpLocalMapTexts.erase(end_unique, mvpLocalMapTexts.end());
+}
+
+void SearchLocalTextObjects()
+{
+    
 }
 
 
