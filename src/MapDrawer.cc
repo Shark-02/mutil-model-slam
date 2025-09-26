@@ -448,42 +448,49 @@ void MapDrawer::DrawMapObjects()
 
 void MapDrawer::DrawTextLandmarks()
 {
-    //std::cout << "[DrawTexts] called" << std::endl;
-
     const std::vector<MapText*> vMapTexts = mpMap->GetAllMapTexts();
-    std::cout << "[DrawTexts] vMapTexts.size = " << vMapTexts.size() << std::endl;
     if (vMapTexts.empty()) return;
 
-    glPointSize(mPointSize);
-    glBegin(GL_POINTS);
+    glColor3f(1.0f, 1.0f, 0.0f); // 黄色
+    glLineWidth(2.0f);
+
     for (auto pT : vMapTexts)
     {
-        if (!pT) {
-            //std::cout << "  [DrawTexts] null MapText pointer" << std::endl;
-            continue;
+        if (!pT || pT->isBad()) continue;
+
+        // 取 3D bbox 八个角点
+        auto bbox3D = pT->GetWorldBoundingBox();
+        if (bbox3D.size() < 8) continue;
+
+        // 画前面四点（矩形）
+        glBegin(GL_LINE_LOOP);
+        for (int i = 0; i < 4; i++)
+        {
+            cv::Mat pt = bbox3D[i];
+            glVertex3f(pt.at<float>(0), pt.at<float>(1), pt.at<float>(2));
         }
-        if (pT->isBad()) {
-            //std::cout << "  [DrawTexts] skip bad MapText id=" << pT->mnId << std::endl;
-            continue;
+        glEnd();
+
+        // 画后面四点（矩形）
+        glBegin(GL_LINE_LOOP);
+        for (int i = 4; i < 8; i++)
+        {
+            cv::Mat pt = bbox3D[i];
+            glVertex3f(pt.at<float>(0), pt.at<float>(1), pt.at<float>(2));
         }
+        glEnd();
 
-        Eigen::Vector4d plane = pT->GetWorldPlane(); 
-        Eigen::Vector3d pos = plane.head<3>() * (-plane[3]);
-
-        if (!std::isfinite(pos[0]) || !std::isfinite(pos[1]) || !std::isfinite(pos[2])) {
-            //std::cout << "  [DrawTexts] invalid pos for id=" << pT->mnId 
-                      //<< " plane=" << plane.transpose() << std::endl;
-            continue;
+        // 画前后连线
+        glBegin(GL_LINES);
+        for (int i = 0; i < 4; i++)
+        {
+            cv::Mat p1 = bbox3D[i];
+            cv::Mat p2 = bbox3D[i+4];
+            glVertex3f(p1.at<float>(0), p1.at<float>(1), p1.at<float>(2));
+            glVertex3f(p2.at<float>(0), p2.at<float>(1), p2.at<float>(2));
         }
-
-        std::cout << "  [DrawTexts] id=" << pT->mnId 
-                  << " text=" << pT->mTextInfo.mean 
-                  << " pos=" << pos.transpose() << std::endl;
-
-        glColor3f(1.0f, 1.0f, 0.0f); // 黄色
-        glVertex3f(pos[0], pos[1], pos[2]);
+        glEnd();
     }
-    glEnd();
 }
 
 
