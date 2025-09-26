@@ -2169,67 +2169,133 @@ bool Tracking::FitPlaneRANSAC(const std::vector<cv::Mat>& vPoints3D_world, Eigen
  * @brief (可复用) 为指定关键帧中尚未关联的文本检测创建新的MapText地标
  * @param pKF 需要处理的关键帧
  */
+// src/Tracking.cc
+
+/**
+ * @brief (强化版) 为指定关键帧中尚未关联的文本检测创建新的MapText地标
+ * @param pKF 需要处理的关键帧
+ */
 void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
 {
     // 基本检查
     if (!pKF || pKF->vTextDetections.empty())
         return;
 
-    std::cout << "mvpMapTexts size: " << pKF->mvpMapTexts.size() << std::endl;
-    //for (auto pMT : pKF->mvpMapTexts)
-    //{
-        //std::cout << " MapText " << pMT->mnId
-                  //<< " text='" << pMT->mTextInfo.mean << "'" << std::endl;
-    //}
     // 遍历该关键帧中的所有文本检测
     for (size_t i = 0; i < pKF->vTextDetections.size(); ++i)
     {
-        // 如果这个检测框已经通过TextMatcher关联到了一个已有的地标，则跳过        
+        // 如果这个检测框已经关联到了一个地标，则跳过
         if (pKF->mvpMapTexts[i])
         {
             continue;
         }
 
-        // --- 对于未被关联的检测，执行完整的地标创建流程 ---
         const auto& det = pKF->vTextDetections[i];
         const auto& bbox = det->bbox;
 
-        // 1. 在检测框内寻找ORB特征点
+        // --- 准入筛选步骤 1: 确保检测框内有足够的有效特征点 ---
         const std::vector<size_t> vFeatureIndices = pKF->GetFeaturesInBox(bbox[0], bbox[2], bbox[1], bbox[3]);
-        if (vFeatureIndices.size() < 3) continue;
+        
+        // **[修改 1]** 提高对初始特征点数量的要求
+        const int MIN_FEATURES_FOR_PLANE = 10; // 从至少10个特征点开始拟合平面，比3个点鲁棒得多
+        if (vFeatureIndices.size() < MIN_FEATURES_FOR_PLANE) continue;
 
-        // 2. 恢复这些特征点的3D世界坐标
+        // --- 准入筛选步骤 2: 收集深度信息并进行统计过滤 ---
         std::vector<cv::Mat> vPoints3D_world;
+        std::vector<float> vDepths;
+        vPoints3D_world.reserve(vFeatureIndices.size());
+        vDepths.reserve(vFeatureIndices.size());
+
         for (const size_t& feat_idx : vFeatureIndices)
         {
             const float d = pKF->mvDepth[feat_idx];
-            if (d > 0.1 && d < 10.0) {
+            // **[修改 2]** 强化深度有效性检查，加入最大深度限制
+            if (d > 0.1 && d < 10.0) { // 只考虑10厘米到10米范围内的点
                 cv::Mat p3D_world = pKF->UnprojectStereo(feat_idx);
                 if(!p3D_world.empty())
+                {
                     vPoints3D_world.push_back(p3D_world);
+                    vDepths.push_back(d);
+                }
             }
         }
-        if (vPoints3D_world.size() < 3) continue;
-        
-        // 3. RANSAC平面拟合
-        Eigen::Vector4d plane_world;
-        std::vector<bool> vbInliers; 
-        if (FitPlaneRANSAC(vPoints3D_world, plane_world, vbInliers)) 
+
+        if (vPoints3D_world.size() < MIN_FEATURES_FOR_PLANE) continue;
+
+        // **[修改 3]** 检查深度值的一致性，剔除异常值（例如深度跳变巨大的情况）
+        cv::Scalar mean, stddev;
+        cv::meanStdDev(vDepths, mean, stddev);
+        if (stddev[0] > 0.5) // 如果深度标准差大于0.5米，说明这些点很可能不在一个平面上，放弃
         {
-            // 4. 创建新的MapText对象
+             continue;
+        }
+
+        // --- 准入筛选步骤 3: RANSAC平面拟合与结果验证 ---
+        Eigen::Vector4d plane_world;
+        std::vector<bool> vbInliers;
+        
+        // **[修改 4]** 强化RANSAC的成功标准
+        // 在FitPlaneRANSAC函数内部，建议将成功拟合的inlier阈值从3个点提高到至少5个或更多
+        if (FitPlaneRANSAC(vPoints3D_world, plane_world, vbInliers))
+        {
+            // **[修改 5]** 对拟合出的平面进行最终的几何合理性检查
+            // 将平面转换到当前关键帧的相机坐标系下
+            cv::Mat Twc_ref = pKF->GetPoseInverse();
+            Eigen::Matrix4d T_world_cam;
+            cv::cv2eigen(Twc_ref, T_world_cam);
+            Eigen::Vector3d n_world = plane_world.head<3>();
+            double d_world = plane_world[3];
+
+            Eigen::Matrix3d R_wc = T_world_cam.block<3,3>(0,0);
+            Eigen::Vector3d t_wc = T_world_cam.block<3,1>(0,3);
+
+            Eigen::Vector3d n_cam = R_wc.transpose() * n_world;
+            double d_cam = d_world + n_world.dot(t_wc);
+
+            // a) 检查平面法向量是否大致朝向相机 (在相机坐标系下，法向量的z分量应为负)
+            if (n_cam.z() > -0.1) // 允许一些小的误差
+            {
+                continue;
+            }
+
+            // b) 提前试算包围盒角点的3D坐标，检查是否有负深度
+            const auto& det_bbox_vec = det->bbox;
+            std::vector<cv::Point2f> corners_2d = {
+                {(float)det_bbox_vec[0], (float)det_bbox_vec[1]},
+                {(float)det_bbox_vec[2], (float)det_bbox_vec[3]}
+            };
+
+            bool hasNegativeDepth = false;
+            for(const auto& corner : corners_2d)
+            {
+                float u_norm = (corner.x - pKF->cx) / pKF->fx;
+                float v_norm = (corner.y - pKF->cy) / pKF->fy;
+                Eigen::Vector3d ray(u_norm, v_norm, 1.0);
+                
+                double n_dot_ray = n_cam.dot(ray);
+                if (std::fabs(n_dot_ray) < 1e-6) continue;
+                double t = -d_cam / n_dot_ray;
+                
+                if(t < 0) // 如果计算出的深度t为负，说明这个角点在相机后方
+                {
+                    hasNegativeDepth = true;
+                    break;
+                }
+            }
+            if(hasNegativeDepth)
+            {
+                continue; // 发现异常，不创建此地标
+            }
+
+            // --- 所有检查通过，正式创建地标 ---
             TextInfo textInfo;
             textInfo.mean = det->text;
             textInfo.score = det->score;
             MapText* pNewMT = new MapText(pKF, plane_world, textInfo, mpMap);
 
-            // 5. 将地标添加到地图，并建立关联
             mpMap->AddMapText(pNewMT);
-            pKF->mvpMapTexts[i] = pNewMT; // 将新创建的地标指针存入
-            pNewMT->AddObservation(pKF, i);  
-            std::cout << "create new MapText " << pNewMT->mnId
-                  << " text='" << pNewMT->mTextInfo.mean << "'" << std::endl;        
-            // TODO,暂时不用vTextDeteCorMap，现在是多余的了，因为mvpMapTexts已经包含了完整信息
-            // pKF->vTextDeteCorMap[i] = pNewMT->mnId; 
+            pKF->mvpMapTexts[i] = pNewMT;
+            pNewMT->AddObservation(pKF, i);
         }
     }
 }

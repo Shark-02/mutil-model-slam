@@ -31,6 +31,7 @@
 namespace ORB_SLAM2
 {
 
+pangolin::GlFont *text_font = new pangolin::GlFont("/home/shark/VOOM-main-new/fonts/DejaVuSans.ttf", 6.0); //需要先去网上下载字体
 
 MapDrawer::MapDrawer(Map* pMap, const string &strSettingPath):mpMap(pMap)
 {
@@ -446,52 +447,61 @@ void MapDrawer::DrawMapObjects()
     }
 }
 
+
 void MapDrawer::DrawTextLandmarks()
 {
     const std::vector<MapText*> vMapTexts = mpMap->GetAllMapTexts();
     if (vMapTexts.empty()) return;
 
-    glColor3f(1.0f, 1.0f, 0.0f); // 黄色
     glLineWidth(2.0f);
 
     for (auto pT : vMapTexts)
     {
         if (!pT || pT->isBad()) continue;
 
-        // 取 3D bbox 八个角点
         auto bbox3D = pT->GetWorldBoundingBox();
         if (bbox3D.size() < 8) continue;
 
-        // 画前面四点（矩形）
-        glBegin(GL_LINE_LOOP);
-        for (int i = 0; i < 4; i++)
-        {
+        // ---- 1. 画立方体边框 ----
+        glColor3f(1.0f, 1.0f, 0.0f); // 黄色
+        glBegin(GL_LINE_LOOP); // 前面
+        for (int i = 0; i < 4; i++) {
             cv::Mat pt = bbox3D[i];
             glVertex3f(pt.at<float>(0), pt.at<float>(1), pt.at<float>(2));
         }
         glEnd();
 
-        // 画后面四点（矩形）
-        glBegin(GL_LINE_LOOP);
-        for (int i = 4; i < 8; i++)
-        {
+        glBegin(GL_LINE_LOOP); // 后面
+        for (int i = 4; i < 8; i++) {
             cv::Mat pt = bbox3D[i];
             glVertex3f(pt.at<float>(0), pt.at<float>(1), pt.at<float>(2));
         }
         glEnd();
 
-        // 画前后连线
-        glBegin(GL_LINES);
-        for (int i = 0; i < 4; i++)
-        {
+        glBegin(GL_LINES); // 连接前后
+        for (int i = 0; i < 4; i++) {
             cv::Mat p1 = bbox3D[i];
-            cv::Mat p2 = bbox3D[i+4];
+            cv::Mat p2 = bbox3D[i + 4];
             glVertex3f(p1.at<float>(0), p1.at<float>(1), p1.at<float>(2));
             glVertex3f(p2.at<float>(0), p2.at<float>(1), p2.at<float>(2));
         }
         glEnd();
+
+        // ---- 2. 计算立方体中心点 ----
+        Eigen::Vector3d center(0, 0, 0);
+        for (int i = 0; i < 8; i++) {
+            cv::Mat pt = bbox3D[i];
+            center += Eigen::Vector3d(pt.at<float>(0), pt.at<float>(1), pt.at<float>(2));
+        }
+        center /= 8.0;
+
+        // ---- 3. 在中心绘制文字 ----
+        const std::string &text = pT->mTextInfo.mean;
+        glColor3f(1.0f, 0.0f, 0.0f); // 红色文字
+        text_font->Text(text).Draw(center.x(), center.y(), center.z());
     }
 }
+
 
 
 
