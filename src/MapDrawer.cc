@@ -448,7 +448,7 @@ void MapDrawer::DrawMapObjects()
 
 void MapDrawer::DrawTextLandmarks()
 {
-    std::cout << "[DrawTexts] called" << std::endl;
+    //std::cout << "[DrawTexts] called" << std::endl;
 
     const std::vector<MapText*> vMapTexts = mpMap->GetAllMapTexts();
     std::cout << "[DrawTexts] vMapTexts.size = " << vMapTexts.size() << std::endl;
@@ -459,11 +459,11 @@ void MapDrawer::DrawTextLandmarks()
     for (auto pT : vMapTexts)
     {
         if (!pT) {
-            std::cout << "  [DrawTexts] null MapText pointer" << std::endl;
+            //std::cout << "  [DrawTexts] null MapText pointer" << std::endl;
             continue;
         }
         if (pT->isBad()) {
-            std::cout << "  [DrawTexts] skip bad MapText id=" << pT->mnId << std::endl;
+            //std::cout << "  [DrawTexts] skip bad MapText id=" << pT->mnId << std::endl;
             continue;
         }
 
@@ -471,8 +471,8 @@ void MapDrawer::DrawTextLandmarks()
         Eigen::Vector3d pos = plane.head<3>() * (-plane[3]);
 
         if (!std::isfinite(pos[0]) || !std::isfinite(pos[1]) || !std::isfinite(pos[2])) {
-            std::cout << "  [DrawTexts] invalid pos for id=" << pT->mnId 
-                      << " plane=" << plane.transpose() << std::endl;
+            //std::cout << "  [DrawTexts] invalid pos for id=" << pT->mnId 
+                      //<< " plane=" << plane.transpose() << std::endl;
             continue;
         }
 

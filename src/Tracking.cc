@@ -1367,7 +1367,7 @@ bool Tracking::TrackWithMotionModel()
   
     // ADDED BY YU FOR Search TEXT LANDMARKS
     UpdateLocalMapTexts(mpMap->GetNeighborKF(mCurrentFrame));
-    TextMatcher text_matcher(0.4, 0.6);
+    TextMatcher text_matcher(0.4, 0.4, 0.5);
     std::fill(mCurrentFrame.mvpMapTexts.begin(), mCurrentFrame.mvpMapTexts.end(), static_cast<MapText*>(NULL));
     std::cout << "候选地标数量: " << mvpLocalMapTexts.size() << std::endl; // <-- 增加这行
     text_matcher.SearchTextByProjection(mCurrentFrame,mvpLocalMapTexts); 
@@ -2166,10 +2166,16 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
     if (!pKF || pKF->vTextDetections.empty())
         return;
 
+    std::cout << "mvpMapTexts size: " << pKF->mvpMapTexts.size() << std::endl;
+    //for (auto pMT : pKF->mvpMapTexts)
+    //{
+        //std::cout << " MapText " << pMT->mnId
+                  //<< " text='" << pMT->mTextInfo.mean << "'" << std::endl;
+    //}
     // 遍历该关键帧中的所有文本检测
     for (size_t i = 0; i < pKF->vTextDetections.size(); ++i)
     {
-        // 如果这个检测框已经通过TextMatcher关联到了一个已有的地标，则跳过
+        // 如果这个检测框已经通过TextMatcher关联到了一个已有的地标，则跳过        
         if (pKF->mvpMapTexts[i])
         {
             continue;
@@ -2210,7 +2216,9 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
             // 5. 将地标添加到地图，并建立关联
             mpMap->AddMapText(pNewMT);
             pKF->mvpMapTexts[i] = pNewMT; // 将新创建的地标指针存入
-            pNewMT->AddObservation(pKF, i);          
+            pNewMT->AddObservation(pKF, i);  
+            std::cout << "create new MapText " << pNewMT->mnId
+                  << " text='" << pNewMT->mTextInfo.mean << "'" << std::endl;        
             // TODO,暂时不用vTextDeteCorMap，现在是多余的了，因为mvpMapTexts已经包含了完整信息
             // pKF->vTextDeteCorMap[i] = pNewMT->mnId; 
         }

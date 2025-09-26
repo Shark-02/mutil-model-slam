@@ -14,22 +14,56 @@ TextMatcher::TextMatcher(float znccThreshold, float minIoU, float minTextSimilar
 
 // TextMatcher.cc
 
-int TextMatcher::SearchTextByProjection(Frame &F, const std::vector<MapText*> &vpMapTexts)
+int TextMatcher::SearchTextByProjection(Frame &F, const std::vector<MapText*> &vpMapTexts,ProjectionMode mode)
 {
     int nMatches = 0;  
     // 使用一个布尔向量来确保每个2D检测框只被匹配一次
     std::vector<bool> vbMatchedDetection(F.vTextDetections.size(), false);
+    std::cout << "[TextMatcher] Frame " << F.mnId
+              << " #detections=" << F.vTextDetections.size()
+              << " #candidates=" << vpMapTexts.size() << std::endl;
 
     // 遍历所有可见的3D文本地标
     for (MapText* pMT : vpMapTexts)
     {
         if (!pMT || pMT->isBad())
             continue;
+        std::cout << "[TextMatcher] trying MapText " << pMT->mnId
+                  << " text='" << pMT->mTextInfo.mean << "'" << std::endl;
 
         // 阶段一: 几何投影
         cv::Rect2f proj_bbox;
-        if (!ProjectTextToImage(pMT, F.mTcw, F.mK, proj_bbox, F))
+        bool ok = false;
+        if (mode == ProjectionMode::BOUNDING_BOX)
+        {
+            // 用 MapText::GetWorldBoundingBox()
+            ok = ProjectTextToImage(pMT, F.mTcw, F.mK, proj_bbox, F);
+        }
+        else if (mode == ProjectionMode::HOMOGRAPHY)
+        {
+            // 用单应性投影
+            auto proj_corners = pMT->ProjectByHomography(F);
+            if (proj_corners.size() == 4) {
+                float minx = 1e9, miny = 1e9, maxx = -1e9, maxy = -1e9;
+                for (auto &pt : proj_corners) {
+                    minx = std::min(minx, pt.x);
+                    miny = std::min(miny, pt.y);
+                    maxx = std::max(maxx, pt.x);
+                    maxy = std::max(maxy, pt.y);
+                }
+                proj_bbox = cv::Rect2f(minx, miny, maxx - minx, maxy - miny);
+                ok = true;
+            }
+        }
+
+        if (!ok) {
+            std::cout << "  -> projection failed / not in frustum\n";
             continue;
+        }
+
+        std::cout << "  -> proj_bbox: [" << proj_bbox.width << " x " << proj_bbox.height
+                  << " from (" << proj_bbox.x << "," << proj_bbox.y << ")]" << std::endl;
+
 
         // 阶段二: 外观验证 (ZNCC预筛选)
         KeyFrame* pRefKF = pMT->GetReferenceKeyFrame();
@@ -56,17 +90,25 @@ int TextMatcher::SearchTextByProjection(Frame &F, const std::vector<MapText*> &v
             cv::Rect2f det_bbox(det_bbox_vec[0], det_bbox_vec[1], det_bbox_vec[2] - det_bbox_vec[0], det_bbox_vec[3] - det_bbox_vec[1]);
 
             float iou = CalculateIoU(proj_bbox, det_bbox);
-            if (iou < mfMinIoU) continue;
+            std::cout << "    det " << i << " iou=" << iou << std::endl;
+            std::cout << "    det " << det->text << std::endl;
+            //if (iou < mfMinIoU) continue;
 
             float text_sim = 1.0f - (float)LevenshteinDistance(pMT->mTextInfo.mean, det->text) / std::max(pMT->mTextInfo.mean.length(), det->text.length());
-            if (text_sim < mfMinTextSimilarity) continue;
+            std::cout << " text_sim=" << text_sim << std::endl;
+            if(iou < mfMinIoU && text_sim < mfMinTextSimilarity) continue;
+            //if (text_sim < mfMinTextSimilarity) continue;
+
 
             float current_score = iou + text_sim;
+            std::cout << " current_score=" << current_score << std::endl;
 
             if (current_score > max_score)
             {
                 max_score = current_score;
                 best_match_idx = i;
+                std::cout << " max_score=" << max_score << std::endl;
+                std::cout << " best_match_idx=" << best_match_idx << std::endl;
             }
         }
 

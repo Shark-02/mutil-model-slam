@@ -11,6 +11,11 @@
 namespace ORB_SLAM2
 {
 
+enum class ProjectionMode {
+    BOUNDING_BOX,
+    HOMOGRAPHY
+};
+
 class TextMatcher
 {
 public:
@@ -28,7 +33,7 @@ public:
      * @param vpMapTexts 视野内可见的候选3D文本地标
      * @return int 成功匹配的数量
      */
-    int SearchTextByProjection(Frame &F, const std::vector<MapText*> &vpMapTexts);
+    int SearchTextByProjection(Frame &F, const std::vector<MapText*> &vpMapTexts,ProjectionMode mode=ProjectionMode::HOMOGRAPHY);
 
 private:
     // 几何投影辅助函数

@@ -54,8 +54,7 @@ KeyFrame::KeyFrame(Frame &F, Map *pMap, KeyFrameDatabase *pKFDB):
             mGrid[i][j] = F.mGrid[i][j];
     }
 
-    SetPose(F.mTcw); 
-    mvpMapTexts = std::vector<MapText*>(N, static_cast<MapText*>(NULL));   
+    SetPose(F.mTcw);   
     
     //ADDED FOR GRAPH
     if (F.graph){

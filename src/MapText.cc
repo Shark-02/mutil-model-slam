@@ -148,10 +148,6 @@ MapText* MapText::GetReplaced()
     return mpReplaced;
 }
 
-// ... (文件已有的内容)
-
-// **↓↓↓ 将以下整个函数复制并粘贴到文件末尾 ↓↓↓**
-
 /**
  * @brief 计算并返回该文本地标在世界坐标系下的3D包围盒的8个角点
  * @return std::vector<cv::Mat> 8个3x1的Mat，每个代表一个角点的世界坐标
@@ -199,6 +195,10 @@ std::vector<cv::Mat> MapText::GetWorldBoundingBox()
 
         double t = -d_c / n_dot_ray;
         Eigen::Vector3d p3D_cam_eig = t * ray;
+        std::cout << "[GetWorldBoundingBox] refKF " << mpRefKF->mnId
+              << " 2D=(" << corner.x << "," << corner.y << ")"
+              << " -> 3D_cam=(" << p3D_cam_eig.transpose() << ")" 
+              << " t=" << t << std::endl;
         
         front_face_3d_cam.push_back((cv::Mat_<float>(3, 1) << p3D_cam_eig.x(), p3D_cam_eig.y(), p3D_cam_eig.z()));
     }
@@ -220,8 +220,13 @@ std::vector<cv::Mat> MapText::GetWorldBoundingBox()
     cv::Mat Rwc_ref = Twc_ref.rowRange(0, 3).colRange(0, 3);
     cv::Mat Ow_ref = Twc_ref.rowRange(0, 3).col(3);
 
-    for (const auto& p_cam : front_face_3d_cam) {
-        bbox3D_world.push_back(Rwc_ref * p_cam + Ow_ref);
+    for (size_t i = 0; i < front_face_3d_cam.size(); i++) {
+        cv::Mat p_world = Rwc_ref * front_face_3d_cam[i] + Ow_ref;
+        std::cout << "[GetWorldBoundingBox] world corner " << i
+                << " = (" << p_world.at<float>(0) << ","
+                << p_world.at<float>(1) << ","
+                << p_world.at<float>(2) << ")" << std::endl;
+        bbox3D_world.push_back(p_world);
     }
     for (const auto& p_cam : back_face_3d_cam) {
         bbox3D_world.push_back(Rwc_ref * p_cam + Ow_ref);
@@ -229,6 +234,51 @@ std::vector<cv::Mat> MapText::GetWorldBoundingBox()
     
     return bbox3D_world;
 }
+
+std::vector<cv::Point2f> MapText::ProjectByHomography(const Frame& F)
+{
+    std::vector<cv::Point2f> proj_corners;
+
+    if (!mObservations.count(mpRefKF)) return proj_corners;
+    size_t ref_det_idx = mObservations[mpRefKF];
+    if (ref_det_idx >= mpRefKF->vTextDetections.size()) return proj_corners;
+
+    // 参考帧 bbox 四角点
+    const auto& det_bbox = mpRefKF->vTextDetections[ref_det_idx]->bbox;
+    std::vector<cv::Point2f> corners_ref = {
+        {det_bbox[0], det_bbox[1]},
+        {det_bbox[2], det_bbox[1]},
+        {det_bbox[2], det_bbox[3]},
+        {det_bbox[0], det_bbox[3]}
+    };
+
+    // 相机位姿
+    cv::Mat Tcw_ref = mpRefKF->GetPose();  // world->refCam
+    cv::Mat Tcw_cur = F.mTcw;              // world->curCam
+    cv::Mat Twc_ref = Tcw_ref.inv();       // refCam->world
+    cv::Mat Tcr = Tcw_cur * Twc_ref;       // refCam->curCam
+
+
+    cv::Mat R, t;
+    Tcr.rowRange(0,3).colRange(0,3).convertTo(R, CV_64F);
+    Tcr.rowRange(0,3).col(3).convertTo(t, CV_64F);
+
+    // 平面参数 (相机坐标系)
+    Eigen::Vector3d n_eig = mThetaRef.head<3>();
+    double d = mThetaRef[3];
+    cv::Mat n = (cv::Mat_<double>(3,1) << n_eig.x(), n_eig.y(), n_eig.z());
+
+    // 单应性
+    cv::Mat Kd;
+    F.mK.convertTo(Kd, CV_64F);
+    cv::Mat H = Kd * (R - (t * n.t()) / d) * Kd.inv();
+
+    // 投影
+    cv::perspectiveTransform(corners_ref, proj_corners, H);
+    return proj_corners;
+}
+
+
 
 int MapText::GetIndexInKeyFrame(KeyFrame* pKF)
 {
