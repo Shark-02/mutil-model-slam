@@ -1414,6 +1414,11 @@ bool Tracking::TrackLocalMap(bool use_object)
 
     SearchLocalPoints();
 
+    //YUTODO 不要重复创建text matcher
+    TextMatcher text_matcher(0.4, 0.4, 0.5);
+    std::cout << "候选地标数量: " << mvpLocalMapTexts.size() << std::endl; // <-- 增加这行
+    text_matcher.SearchTextByProjection(mCurrentFrame,mvpLocalMapTexts); 
+
     // Optimize Pose
     Optimizer::PoseOptimization(&mCurrentFrame);
     mnMatchesInliers = 0;
@@ -1676,11 +1681,15 @@ void Tracking::SearchLocalPoints()
 
 void Tracking::UpdateLocalMap(bool use_object)
 {
+    //TODO make it a param
+    bool use_text = true;
     // This is for visualization
     mpMap->SetReferenceMapPoints(mvpLocalMapPoints);
 
     // Update
     UpdateLocalKeyFrames(use_object);
+    if(use_text)
+        UpdateLocalMapTexts(mvpLocalKeyFrames);
     UpdateLocalPoints();
 }
 
@@ -2228,7 +2237,7 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
 //ADDED BY YU FOR TO SEARCH LOCAL TEXTOBJS
 void Tracking::UpdateLocalMapTexts(vector<KeyFrame*> neighbor_kfs)
 {
-    // 1. 清空上一帧的局部文本地标列表
+    // 1. 清空局部文本地标列表
     mvpLocalMapTexts.clear();
 
     // 2. 遍历所有局部关键帧，将它们观测到的所有文本地标收集起来 (包含重复项)
@@ -2262,11 +2271,6 @@ void Tracking::UpdateLocalMapTexts(vector<KeyFrame*> neighbor_kfs)
 
     // c. 删除从该迭代器到末尾的所有重复元素
     mvpLocalMapTexts.erase(end_unique, mvpLocalMapTexts.end());
-}
-
-void SearchLocalTextObjects()
-{
-    
 }
 
 
