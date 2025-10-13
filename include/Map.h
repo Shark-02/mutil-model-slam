@@ -59,6 +59,7 @@ public:
     std::vector<MapPoint*> GetAllMapPoints();
     std::vector<Object*> GetAllObjects();
     std::vector<MapText*> GetAllMapTexts();
+    //std::vector<MapText*> GetAllMapTexts(const TextStatus &state);
     std::vector<MapPoint*> GetReferenceMapPoints();
 
     long unsigned int MapPointsInMap();

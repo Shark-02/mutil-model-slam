@@ -462,8 +462,23 @@ void MapDrawer::DrawTextLandmarks()
         auto bbox3D = pT->GetWorldBoundingBox();
         if (bbox3D.size() < 8) continue;
 
-        // ---- 1. 画立方体边框 ----
-        glColor3f(1.0f, 1.0f, 0.0f); // 黄色
+        // -------- 1. 根据状态设置颜色 --------
+        // 这里假设 TEXTGOOD=0, TEXTIMMATURE=1, TEXTBAD=2
+        switch (pT->mState)
+        {
+            case TEXTGOOD:
+                glColor3f(0.0f, 1.0f, 0.0f); // 绿色：稳定文字
+                break;
+            case TEXTIMMATURE:
+                glColor3f(1.0f, 1.0f, 0.0f); // 黄色：待验证
+                break;
+            case TEXTBAD:
+            default:
+                glColor3f(1.0f, 0.0f, 0.0f); // 红色：无效/错误
+                break;
+        }
+
+        // -------- 2. 绘制立方体边框 --------
         glBegin(GL_LINE_LOOP); // 前面
         for (int i = 0; i < 4; i++) {
             cv::Mat pt = bbox3D[i];

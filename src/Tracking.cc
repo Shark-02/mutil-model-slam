@@ -1402,6 +1402,16 @@ bool Tracking::TrackWithMotionModel()
         return nmatches>20;
     }
 
+    //std::vector<MapText*> vMapTexts = mpMap->GetAllMapTexts(TEXTIMMATURE);
+    std::vector<MapText*> vMapTextIM;
+    std::vector<MapText*> vMapTexts = mpMap->GetAllMapTexts();
+    for(MapText* pMT : vMapTexts)
+    {
+        if(pMT && !pMT->isBad() && pMT->mState == TEXTIMMATURE)
+            vMapTextIM.push_back(pMT);
+    }
+    UpdateTextStatus(vMapTextIM);
+
     return nmatchesMap>=10;
 }
 
@@ -1444,6 +1454,12 @@ bool Tracking::TrackLocalMap(bool use_object)
 
         }
     }
+    // Update Texts Statistics
+    std::vector<MapText*> vpCurrentTextObs;
+    for(MapText* pMT : mCurrentFrame.mvpMapTexts) { if(pMT) vpCurrentTextObs.push_back(pMT); }
+    std::sort(vpCurrentTextObs.begin(), vpCurrentTextObs.end());
+    vpCurrentTextObs.erase(std::unique(vpCurrentTextObs.begin(), vpCurrentTextObs.end()), vpCurrentTextObs.end());
+    UpdateTextStatus(vpCurrentTextObs);
 
     // Decide if the tracking was succesful
     // More restrictive if there was a relocalization recently
@@ -2300,6 +2316,61 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
     }
 }
 
+void Tracking::UpdateTextStatus(vector<MapText*> &vTexts)
+{
+    // 设置一些判断阈值
+    const int Pym = 0; // 使用第0层金字塔图像
+    const int threshOut = 3; // 投影点距离图像边缘的最小像素距离
+    const double threshcos = 0.5; // 文本平面法向量与相机光轴夹角的余弦阈值
+    const double threshZNCC = -3.0; // ZNCC相似度阈值, -3.0表示暂时不使用
+
+    for(size_t itext=0; itext<vTexts.size(); itext++)
+    {
+        // 1. 只处理“不成熟”的地标
+        if(vTexts[itext]->mState != TEXTIMMATURE)
+            continue;
+
+        MapText* obj = vTexts[itext];
+
+        // 2. 判断地标在当前帧是否“健康”可见
+        bool Obj_OK = TextJudgeSingle(obj, threshcos, threshOut, threshZNCC, Pym);
+        if(!Obj_OK)
+            continue;
+
+        // 3. 如果可见，增加观测次数并进行优化
+        obj->mnFound++;
+
+        /*
+        //TODO 做一个平面参数优化器，用来优化maptext的参数
+        // ------------------------------------------------------------------
+        // 核心步骤：优化平面参数。
+        // ------------------------------------------------------------------
+        // TextSLAM 在这里调用了基于 Ceres 的复杂优化器 coOptimizer->ThetaOptimMultiFs()
+        // 这是一个巨大的工程，涉及到多帧图像的光度误差最小化。
+        // 在您的项目中，您可以先用一个简化逻辑代替，后续再实现完整的优化器。
+        // 简化逻辑：我们暂时假设每次观测都是可靠的，直接检查观测次数。
+        */
+        bool optimization_successful = true; // 假设优化成功
+
+        if(!optimization_successful){
+            obj->mState = TEXTBAD; // 如果优化失败，则标记为坏点
+            continue;
+        }
+
+        // 4. 检查是否满足“转正”条件
+        const int minObservationsForPromotion = 4; // 至少需要稳定观测4次
+        // TextSLAM 还检查了优化前后平面法向量的稳定性（夹角余弦值 > 0.9）
+        // double cosAngleAfterOptimization = ...; // 计算优化前后法向量的点积
+        // if(cosAngleAfterOptimization < 0.9) continue;
+
+        if(obj->mnFound  >= minObservationsForPromotion)
+        {
+            obj->mState = TEXTGOOD; // 晋升为“良好”地标
+            std::cout << "[TextSLAM Logic] MapText " << obj->mnId << " ('" << obj->mTextInfo.mean << "') promoted to GOOD." << std::endl;
+        }
+    }
+}
+
 //ADDED BY YU FOR TO SEARCH LOCAL TEXTOBJS
 void Tracking::UpdateLocalMapTexts(vector<KeyFrame*> neighbor_kfs)
 {
@@ -2337,6 +2408,85 @@ void Tracking::UpdateLocalMapTexts(vector<KeyFrame*> neighbor_kfs)
 
     // c. 删除从该迭代器到末尾的所有重复元素
     mvpLocalMapTexts.erase(end_unique, mvpLocalMapTexts.end());
+}
+
+/**
+ * @brief 判断一个文本地标在当前帧的投影是否有效和可靠
+ * @param obj 要判断的 MapText 对象
+ * @param threshcos 视角余弦阈值。视角越接近正面，余弦值越接近1。用于过滤掉视角过斜的观测。
+ * @param threshOut 投影边界框距离图像边缘的最小像素距离。
+ * @param threshZNCC ZNCC相似度阈值 (暂未使用，为兼容性保留)。
+ * @param Pym 使用的图像金字塔层级 (这里固定为0，即原图)。
+ * @return 如果观测可靠则返回 true，否则返回 false。
+ */
+bool Tracking::TextJudgeSingle(MapText* obj, const int &threshcos, const int &threshOut, const double &threshZNCC, const int &Pym)
+{
+    // 1. 基本检查
+    if (!obj || obj->isBad())
+        return false;
+
+    // 2. 几何投影检查
+    TextMatcher text_matcher;
+    cv::Rect2f proj_bbox;
+    bool isVisible = text_matcher.ProjectTextToImage(obj, mCurrentFrame.mTcw, mCurrentFrame.mK, proj_bbox, mCurrentFrame);
+
+    if (!isVisible)
+        return false; // 如果投影失败或完全在视锥外，则直接判定为不可见
+
+    // 3. 图像边界检查
+    // 检查投影后的2D包围盒是否过于靠近图像边缘
+    if (proj_bbox.x <= threshOut || proj_bbox.y <= threshOut ||
+       (proj_bbox.x + proj_bbox.width) >= (mCurrentFrame.mImGray.cols - threshOut) ||
+       (proj_bbox.y + proj_bbox.height) >= (mCurrentFrame.mImGray.rows - threshOut))
+    {
+        return false;
+    }
+
+    // 4. 视角检查 (核心)
+    // 这是避免因视角过偏导致巨大形变和错误匹配的关键步骤
+    Eigen::Vector4d plane_world = obj->GetWorldPlane();
+    Eigen::Vector3d normal_world = plane_world.head<3>(); // 世界坐标系下的平面法向量
+
+    // 获取当前相机光心在世界坐标系下的位置
+    cv::Mat O_w_cv = mCurrentFrame.GetCameraCenter();
+    Eigen::Vector3d O_w(O_w_cv.at<float>(0), O_w_cv.at<float>(1), O_w_cv.at<float>(2));
+
+    // 计算从相机光心指向文本地标中心点的向量
+    // 为了简化，我们使用平面上的一个点（原点到平面的垂足）来近似中心点
+    Eigen::Vector3d text_pos_world = normal_world * (-plane_world[3]);
+    Eigen::Vector3d view_vector = text_pos_world - O_w;
+    view_vector.normalize();
+    normal_world.normalize();
+
+    // 计算视角向量与平面法向量的夹角余弦值
+    double cos_angle = std::abs(view_vector.dot(normal_world));
+
+    // 如果夹角过大（余弦值过小），则认为观测不可靠
+    if (cos_angle < threshcos) // threshcos 建议值为 0.5 左右
+    {
+        return false;
+    }
+
+    // 5. ZNCC 外观相似度检查 (可选，当前为禁用状态)
+    bool useZNCC = (threshZNCC > -2.0);
+    if (useZNCC) {
+        KeyFrame* pRefKF = obj->GetReferenceKeyFrame();
+        if(!pRefKF) return false;
+
+        size_t ref_det_idx = obj->GetIndexInKeyFrame(pRefKF);
+        if(ref_det_idx >= pRefKF->vTextDetections.size()) return false;
+
+        const auto& ref_det_bbox_vec = pRefKF->vTextDetections[ref_det_idx]->bbox;
+        cv::Rect2f ref_bbox(ref_det_bbox_vec[0], ref_det_bbox_vec[1], ref_det_bbox_vec[2] - ref_det_bbox_vec[0], ref_det_bbox_vec[3] - ref_det_bbox_vec[1]);
+
+        float zncc_score = text_matcher.CalculateZNCC(pRefKF->mImGray, ref_bbox, mCurrentFrame.mImGray, proj_bbox);
+        if (zncc_score < threshZNCC)
+            return false;
+    }
+
+
+    // 所有检查都通过，认为这是一个可靠的观测
+    return true;
 }
 
 

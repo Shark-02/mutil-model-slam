@@ -178,6 +178,9 @@ protected:
     void UpdateLocalMapTexts(vector<KeyFrame*> neighbor_kfs);
     bool FitPlaneRANSAC(const std::vector<cv::Mat> &vPoints3D, Eigen::Vector4d &plane_theta, std::vector<bool> &vbInliers);
     float PointToPlaneDistance(const cv::Mat &point, const Eigen::Vector4d &plane);
+    void UpdateTextStatus(std::vector<MapText*> &vTexts);
+    bool TextJudgeSingle(MapText* obj, const int &threshcos, const int &threshOut, const double &threshZNCC, const int &Pym);
+
 
     // Map initialization for monocular
     void MonocularInitialization();

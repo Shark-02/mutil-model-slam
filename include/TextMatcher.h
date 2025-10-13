@@ -27,6 +27,14 @@ public:
      */
     TextMatcher(float znccThreshold = 0.4f, float minIoU = 0.3f, float minTextSimilarity = 0.6f);
 
+    // 几何投影辅助函数
+    bool ProjectTextToImage(MapText* pMT, const cv::Mat& Tcw, const cv::Mat& K, 
+                            cv::Rect2f& out_bbox, const Frame& F);
+    
+    // 外观验证辅助函数
+    float CalculateZNCC(const cv::Mat& img1, const cv::Rect2f& roi1, 
+                        const cv::Mat& img2, const cv::Rect2f& roi2);
+
     /**
      * @brief 主函数：通过三重验证来跟踪地图中的文本地标
      * @param F 当前帧
@@ -36,13 +44,6 @@ public:
     int SearchTextByProjection(Frame &F, const std::vector<MapText*> &vpMapTexts,ProjectionMode mode=ProjectionMode::HOMOGRAPHY);
 
 private:
-    // 几何投影辅助函数
-    bool ProjectTextToImage(MapText* pMT, const cv::Mat& Tcw, const cv::Mat& K, 
-                            cv::Rect2f& out_bbox, const Frame& F);
-    
-    // 外观验证辅助函数
-    float CalculateZNCC(const cv::Mat& img1, const cv::Rect2f& roi1, 
-                        const cv::Mat& img2, const cv::Rect2f& roi2);
 
     // 几何关联辅助函数
     float CalculateIoU(const cv::Rect2f& r1, const cv::Rect2f& r2);

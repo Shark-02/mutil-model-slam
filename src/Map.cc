@@ -182,6 +182,19 @@ std::vector<MapText*> Map::GetAllMapTexts()
     return mspMapTexts;
 }
 
+/*
+std::vector<MapText*> Map::GetAllMapTexts(const TextStatus &state)
+{
+    std::unique_lock<std::mutex> lock(mMutexMapTexts);
+    std::vector<MapText*> vMapTextObjsout;
+    for(MapText* pMT : mspMapTexts)
+    {
+        if(pMT && !pMT->isBad() && pMT->mState == state)
+            vMapTextObjsout.push_back(pMT);
+    }
+    return vMapTextObjsout;
+}*/
+
 
 /**
  * @brief 根据当前普通帧，获取时间上最近的两个关键帧 (std::set)
