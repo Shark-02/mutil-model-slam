@@ -463,7 +463,7 @@ void MapDrawer::DrawTextLandmarks()
         if (bbox3D.size() < 8) continue;
 
         // -------- 1. 根据状态设置颜色 --------
-        // 这里假设 TEXTGOOD=0, TEXTIMMATURE=1, TEXTBAD=2
+        // TEXTGOOD=0, TEXTIMMATURE=1, TEXTBAD=2
         switch (pT->mState)
         {
             case TEXTGOOD:

@@ -41,9 +41,9 @@ struct TextInfo {
 class MapText
 {
 public:
-    // EIGEN_MAKE_ALIGNED_OPERATOR_NEW // 如果你在类中直接使用Eigen固定大小的成员，需要这个宏
+    // EIGEN_MAKE_ALIGNED_OPERATOR_NEW // 如果在类中直接使用Eigen固定大小的成员，需要这个宏
 
-    // 构造函数 (适配ORB-SLAM2/V-OOM的版本)
+    // 构造函数
     MapText(KeyFrame* pRefKF, const Eigen::Vector4d& theta, 
             const TextInfo& textInfo, Map* pMap);
 
@@ -74,7 +74,7 @@ public:
     MapText* GetReplaced();
 
 public:
-    // --- 公共成员变量 (遵循ORB-SLAM2风格) ---
+    // --- 公共成员变量 ---
     long unsigned int mnId;                     // 全局唯一ID
     static long unsigned int nNextId;
 

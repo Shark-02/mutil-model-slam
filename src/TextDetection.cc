@@ -45,7 +45,7 @@ std::vector<Detection::Ptr> TextDetectionsFromFile::detect(const std::string &im
         if(line.empty()) continue;
         std::stringstream ss(line);
         std::string word; double score;
-        // 假设格式是: TEXT,score  （注意你提供的样例里是 "WORD,0.933..."; 若不同请调整解析）
+        // 格式是: TEXT,score
         if (std::getline(ss, word, ',') && (ss >> score)) {
             // trim spaces from word
             while(!word.empty() && isspace(word.back())) word.pop_back();
@@ -68,7 +68,7 @@ std::vector<Detection::Ptr> TextDetectionsFromFile::detect(const std::string &im
         double xmax = std::numeric_limits<double>::lowest();
         double ymax = std::numeric_limits<double>::lowest();
         
-        // 调试输出：打印quad的所有点坐标
+        // 打印quad的所有点坐标
         //std::cout << "Quad " << i << " points: ";
         for (auto &p : quads[i]) {
             //std::cout << "(" << p.x() << ", " << p.y() << ") ";
@@ -96,7 +96,7 @@ std::vector<Detection::Ptr> TextDetectionsFromFile::detect(const std::string &im
             quad_pts.emplace_back(p.x(), p.y());
         }   
 
-        // category_id: 给一个特殊类别号（比如 1000），或 0。你后续可在 Tracking 判定 text 类别
+        // category_id: 给一个特殊类别号（比如 1000），或 0。可在 Tracking 判定 text 类别
         unsigned int text_cat = 1000;
 
         auto det = std::make_shared<Detection>(text_cat, words[i].second, bb,

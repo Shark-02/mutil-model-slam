@@ -299,7 +299,7 @@ cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const d
     }
 
 
-    // 视需要，把 object_detections 也放回 current_frame_detections_（兼容之后的旧代码）
+    // 视需要，把 object_detections 也放回 current_frame_detections_
     current_frame_detections_ = object_detections;   // only objects
 
     // 单独保存文本检测列表以备绘制/其它文本专用逻辑使用
@@ -2117,7 +2117,7 @@ bool Tracking::FitPlaneRANSAC(const std::vector<cv::Mat>& vPoints3D_world, Eigen
         return false;
 
     const int nIterations = 100;
-    const float th = 0.05; // 5cm 内被认为是内点 (可以根据场景调整)
+    const float th = 0.05; // 5cm 内认为是内点
     int maxInliers = 0;
 
     std::vector<int> bestInlierIndices;
@@ -2138,7 +2138,7 @@ bool Tracking::FitPlaneRANSAC(const std::vector<cv::Mat>& vPoints3D_world, Eigen
         cv::Mat v1 = p2 - p1;
         cv::Mat v2 = p3 - p1;
         cv::Mat normal = v1.cross(v2);
-        cv::normalize(normal, normal); // 确保是单位法向量
+        cv::normalize(normal, normal);
 
         float A = normal.at<float>(0);
         float B = normal.at<float>(1);
@@ -2166,10 +2166,7 @@ bool Tracking::FitPlaneRANSAC(const std::vector<cv::Mat>& vPoints3D_world, Eigen
 
     // 5. 判断拟合是否成功
     if (maxInliers >= 3) {
-        // (推荐) 使用所有找到的内点重新拟合平面以提高精度
-        // 这里可以使用PCA或SVD来做更精确的拟合，一个简单的均值法也可以
-        // 此处为了简单，我们直接使用RANSAC找到的最佳平面
-
+        // 使用所有找到的内点重新拟合平面以提高精度
         vbInliers.assign(nPoints, false);
         for(int idx : bestInlierIndices) {
             vbInliers[idx] = true;
@@ -2180,15 +2177,8 @@ bool Tracking::FitPlaneRANSAC(const std::vector<cv::Mat>& vPoints3D_world, Eigen
     return false;
 }
 
-
 /**
- * @brief (可复用) 为指定关键帧中尚未关联的文本检测创建新的MapText地标
- * @param pKF 需要处理的关键帧
- */
-// src/Tracking.cc
-
-/**
- * @brief (强化版) 为指定关键帧中尚未关联的文本检测创建新的MapText地标
+ * @brief 为指定关键帧中尚未关联的文本检测创建新的MapText地标
  * @param pKF 需要处理的关键帧
  */
 void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
@@ -2209,14 +2199,14 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
         const auto& det = pKF->vTextDetections[i];
         const auto& bbox = det->bbox;
 
-        // --- 准入筛选步骤 1: 确保检测框内有足够的有效特征点 ---
+        // 1: 确保检测框内有足够的有效特征点
         const std::vector<size_t> vFeatureIndices = pKF->GetFeaturesInBox(bbox[0], bbox[2], bbox[1], bbox[3]);
         
-        // **[修改 1]** 提高对初始特征点数量的要求
-        const int MIN_FEATURES_FOR_PLANE = 10; // 从至少10个特征点开始拟合平面，比3个点鲁棒得多
+        // 提高对初始特征点数量的要求
+        const int MIN_FEATURES_FOR_PLANE = 10; // 从至少10个特征点开始拟合平面
         if (vFeatureIndices.size() < MIN_FEATURES_FOR_PLANE) continue;
 
-        // --- 准入筛选步骤 2: 收集深度信息并进行统计过滤 ---
+        // 2: 收集深度信息并进行统计过滤
         std::vector<cv::Mat> vPoints3D_world;
         std::vector<float> vDepths;
         vPoints3D_world.reserve(vFeatureIndices.size());
@@ -2225,7 +2215,7 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
         for (const size_t& feat_idx : vFeatureIndices)
         {
             const float d = pKF->mvDepth[feat_idx];
-            // **[修改 2]** 强化深度有效性检查，加入最大深度限制
+            // 强化深度有效性检查，加入最大深度限制
             if (d > 0.1 && d < 10.0) { // 只考虑10厘米到10米范围内的点
                 cv::Mat p3D_world = pKF->UnprojectStereo(feat_idx);
                 if(!p3D_world.empty())
@@ -2238,7 +2228,7 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
 
         if (vPoints3D_world.size() < MIN_FEATURES_FOR_PLANE) continue;
 
-        // **[修改 3]** 检查深度值的一致性，剔除异常值（例如深度跳变巨大的情况）
+        // 检查深度值的一致性，剔除异常值（例如深度跳变巨大的情况）
         cv::Scalar mean, stddev;
         cv::meanStdDev(vDepths, mean, stddev);
         if (stddev[0] > 0.5) // 如果深度标准差大于0.5米，说明这些点很可能不在一个平面上，放弃
@@ -2246,15 +2236,13 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
              continue;
         }
 
-        // --- 准入筛选步骤 3: RANSAC平面拟合与结果验证 ---
+        // 3: RANSAC平面拟合与结果验证
         Eigen::Vector4d plane_world;
         std::vector<bool> vbInliers;
         
-        // **[修改 4]** 强化RANSAC的成功标准
-        // 在FitPlaneRANSAC函数内部，建议将成功拟合的inlier阈值从3个点提高到至少5个或更多
         if (FitPlaneRANSAC(vPoints3D_world, plane_world, vbInliers))
         {
-            // **[修改 5]** 对拟合出的平面进行最终的几何合理性检查
+            // 对拟合出的平面进行最终的几何合理性检查
             // 将平面转换到当前关键帧的相机坐标系下
             cv::Mat Twc_ref = pKF->GetPoseInverse();
             Eigen::Matrix4d T_world_cam;
@@ -2344,11 +2332,7 @@ void Tracking::UpdateTextStatus(vector<MapText*> &vTexts)
         //TODO 做一个平面参数优化器，用来优化maptext的参数
         // ------------------------------------------------------------------
         // 核心步骤：优化平面参数。
-        // ------------------------------------------------------------------
-        // TextSLAM 在这里调用了基于 Ceres 的复杂优化器 coOptimizer->ThetaOptimMultiFs()
-        // 这是一个巨大的工程，涉及到多帧图像的光度误差最小化。
-        // 在您的项目中，您可以先用一个简化逻辑代替，后续再实现完整的优化器。
-        // 简化逻辑：我们暂时假设每次观测都是可靠的，直接检查观测次数。
+        // 先简化逻辑：暂时假设每次观测都是可靠的，直接检查观测次数。
         */
         bool optimization_successful = true; // 假设优化成功
 
@@ -2484,8 +2468,6 @@ bool Tracking::TextJudgeSingle(MapText* obj, const int &threshcos, const int &th
             return false;
     }
 
-
-    // 所有检查都通过，认为这是一个可靠的观测
     return true;
 }
 

@@ -135,7 +135,7 @@ bool MapText::isBad()
 
 void MapText::Replace(MapText* pMT)
 {
-    // TODO: 实现地标融合逻辑 (高级功能)
+    // TODO: 实现地标融合逻辑 
     // 1. 获取 pMT 的所有观测
     // 2. 将这些观测添加到当前 MapText 对象
     // 3. 通知所有观测到 pMT 的 KeyFrame，让它们更新指针指向当前对象
@@ -157,7 +157,7 @@ std::vector<cv::Mat> MapText::GetWorldBoundingBox()
     std::unique_lock<std::mutex> lock(mMutexFeatures);
     std::vector<cv::Mat> bbox3D_world;
 
-    // --- 1. 从参考关键帧获取原始的2D检测框 ---
+    // 1. 从参考关键帧获取原始的2D检测框 
     if (!mObservations.count(mpRefKF))
         return bbox3D_world; // 如果没有参考帧的观测信息，则无法计算
 
@@ -174,7 +174,7 @@ std::vector<cv::Mat> MapText::GetWorldBoundingBox()
     corners_2d.push_back(cv::Point2f(det_bbox_vec[2], det_bbox_vec[3])); // bottom-right
     corners_2d.push_back(cv::Point2f(det_bbox_vec[0], det_bbox_vec[3])); // bottom-left
 
-    // --- 2. 将2D角点反投影到参考帧相机坐标系的3D平面上 ---
+    // 2. 将2D角点反投影到参考帧相机坐标系的3D平面上
     std::vector<cv::Mat> front_face_3d_cam;
     const Eigen::Vector3d n_c = mThetaRef.head<3>(); // 平面法向量 (相机坐标系)
     const double d_c = mThetaRef[3];               // 平面距离 (相机坐标系)
@@ -205,7 +205,7 @@ std::vector<cv::Mat> MapText::GetWorldBoundingBox()
     
     if (front_face_3d_cam.size() != 4) return bbox3D_world; // 必须要有4个角点
 
-    // --- 3. 根据平面法线方向，构造一个有厚度的包围盒 ---
+    // 3. 根据平面法线方向，构造一个有厚度的包围盒 
     const float BOX_THICKNESS = 0.02; // 假设文本有2cm的厚度
     Eigen::Vector3d n_c_norm = n_c.normalized();
     cv::Mat normal_cv = (cv::Mat_<float>(3, 1) << n_c_norm.x(), n_c_norm.y(), n_c_norm.z());
@@ -215,7 +215,7 @@ std::vector<cv::Mat> MapText::GetWorldBoundingBox()
         back_face_3d_cam.push_back(p_front - BOX_THICKNESS * normal_cv);
     }
     
-    // --- 4. 将包围盒的8个3D角点从参考帧相机坐标系转换到世界坐标系 ---
+    // 4. 将包围盒的8个3D角点从参考帧相机坐标系转换到世界坐标系
     cv::Mat Twc_ref = mpRefKF->GetPoseInverse();
     cv::Mat Rwc_ref = Twc_ref.rowRange(0, 3).colRange(0, 3);
     cv::Mat Ow_ref = Twc_ref.rowRange(0, 3).col(3);
