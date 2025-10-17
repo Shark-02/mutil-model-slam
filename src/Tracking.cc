@@ -2317,7 +2317,7 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
             mpMap->AddMapText(pNewMT);
             pKF->mvpMapTexts[i] = pNewMT;
             pNewMT->AddObservation(pKF, i);
-            cout << "[CreateNewTextLandmarks] Created new MapText " << pNewMT->mnId << " ('" << textInfo.mean << "') in KeyFrame " << pKF->mnId << "score_semantic" << textInfo.score_semantic << std::endl;
+            cout << "[CreateNewTextLandmarks] Created new MapText " << pNewMT->mnId << " ('" << init_info.mean << "') in KeyFrame " << pKF->mnId << "score_semantic" << init_info.score_semantic << std::endl;
         }
     }
 }
