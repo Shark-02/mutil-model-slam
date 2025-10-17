@@ -135,11 +135,47 @@ bool MapText::isBad()
 
 void MapText::Replace(MapText* pMT)
 {
-    // TODO: 实现地标融合逻辑 (高级功能)
-    // 1. 获取 pMT 的所有观测
-    // 2. 将这些观测添加到当前 MapText 对象
-    // 3. 通知所有观测到 pMT 的 KeyFrame，让它们更新指针指向当前对象
-    // 4. 将 pMT 设为 bad，并更新其 mpReplaced 指针
+    if(pMT->mnId == mnId)
+        return;
+
+    int nvisible, nfound;
+    std::map<KeyFrame*, size_t> obs;
+    {
+        std::unique_lock<std::mutex> lock1(mMutexFeatures);
+        std::unique_lock<std::mutex> lock2(pMT->mMutexFeatures);
+
+        obs = mObservations;
+        mObservations.clear();
+        mbBad = true;   // 当前地标标记为无效
+        mpReplaced = pMT;  // 指向替代它的地标
+        nvisible = mnVisible;
+        nfound = mnFound;
+    }
+
+    // 将当前地标的所有观测转移到新的地标中
+    for(auto& obs_kf : obs)
+    {
+        KeyFrame* pKF = obs_kf.first;
+        size_t idx = obs_kf.second;
+
+        // 如果新的地标还未在该关键帧中被观测，则添加
+        if(!pMT->IsInKeyFrame(pKF))
+        {
+            pMT->AddObservation(pKF, idx);
+            pKF->AddMapTextMatch(pMT, idx);
+        }
+        else
+        {
+            // 否则移除旧的观测
+            pKF->EraseMapTextMatch(idx);
+        }
+    }
+
+    pMT->mnVisible += nvisible;
+    pMT->mnFound += nfound;
+    //pMT->ComputeDistinctiveDescriptors(); // TODO: 如果有特征描述符的话可实现
+
+    mpMap->EraseMapText(this);
 }
 
 MapText* MapText::GetReplaced()
@@ -195,10 +231,10 @@ std::vector<cv::Mat> MapText::GetWorldBoundingBox()
 
         double t = -d_c / n_dot_ray;
         Eigen::Vector3d p3D_cam_eig = t * ray;
-        std::cout << "[GetWorldBoundingBox] refKF " << mpRefKF->mnId
+        /*std::cout << "[GetWorldBoundingBox] refKF " << mpRefKF->mnId
               << " 2D=(" << corner.x << "," << corner.y << ")"
               << " -> 3D_cam=(" << p3D_cam_eig.transpose() << ")" 
-              << " t=" << t << std::endl;
+              << " t=" << t << std::endl;*/
         
         front_face_3d_cam.push_back((cv::Mat_<float>(3, 1) << p3D_cam_eig.x(), p3D_cam_eig.y(), p3D_cam_eig.z()));
     }
@@ -222,10 +258,10 @@ std::vector<cv::Mat> MapText::GetWorldBoundingBox()
 
     for (size_t i = 0; i < front_face_3d_cam.size(); i++) {
         cv::Mat p_world = Rwc_ref * front_face_3d_cam[i] + Ow_ref;
-        std::cout << "[GetWorldBoundingBox] world corner " << i
+        /*std::cout << "[GetWorldBoundingBox] world corner " << i
                 << " = (" << p_world.at<float>(0) << ","
                 << p_world.at<float>(1) << ","
-                << p_world.at<float>(2) << ")" << std::endl;
+                << p_world.at<float>(2) << ")" << std::endl;*/
         bbox3D_world.push_back(p_world);
     }
     for (const auto& p_cam : back_face_3d_cam) {
@@ -289,5 +325,37 @@ int MapText::GetIndexInKeyFrame(KeyFrame* pKF)
         return -1;
 }
 
+void MapText::UpdateSemanticInfo(const TextInfo& newInfo)
+{
+    std::unique_lock<std::mutex> lock(mMutexFeatures);
+    if(newInfo.score_semantic < mTextInfo.score_semantic)
+        mTextInfo = newInfo;
+}
+
+void MapText::SetReplaced(MapText* pMT)
+{
+    if(pMT->mnId == mnId)
+        return;
+    std::unique_lock<std::mutex> lock(mMutexFeatures);
+    mpReplaced = pMT;
+}
+
+bool MapText::IsInKeyFrame(KeyFrame* pKF)
+{
+    std::unique_lock<std::mutex> lock(mMutexFeatures);
+    return (mObservations.count(pKF) != 0);
+}
+
+std::string MapText::GetText() const
+{
+    std::unique_lock<std::mutex> lock(mMutexFeatures);
+    return mTextInfo.mean;
+}
+
+TextInfo MapText::GetTextInfo() const
+{
+    std::unique_lock<std::mutex> lock(mMutexFeatures);
+    return mTextInfo;
+}
 
 } // namespace ORB_SLAM2

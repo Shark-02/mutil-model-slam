@@ -1369,7 +1369,7 @@ bool Tracking::TrackWithMotionModel()
     UpdateLocalMapTexts(mpMap->GetNeighborKF(mCurrentFrame));
     TextMatcher text_matcher(0.4, 0.4, 0.5);
     std::fill(mCurrentFrame.mvpMapTexts.begin(), mCurrentFrame.mvpMapTexts.end(), static_cast<MapText*>(NULL));
-    std::cout << "候选地标数量: " << mvpLocalMapTexts.size() << std::endl; // <-- 增加这行
+    //std::cout << "候选地标数量: " << mvpLocalMapTexts.size() << std::endl;
     text_matcher.SearchTextByProjection(mCurrentFrame,mvpLocalMapTexts); 
 
     // Optimize frame pose with all matches
@@ -1426,7 +1426,7 @@ bool Tracking::TrackLocalMap(bool use_object)
 
     //YUTODO 不要重复创建text matcher
     TextMatcher text_matcher(0.4, 0.4, 0.5);
-    std::cout << "候选地标数量: " << mvpLocalMapTexts.size() << std::endl; // <-- 增加这行
+    //std::cout << "候选地标数量: " << mvpLocalMapTexts.size() << std::endl;
     text_matcher.SearchTextByProjection(mCurrentFrame,mvpLocalMapTexts); 
 
     // Optimize Pose
@@ -2308,10 +2308,16 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
             textInfo.mean = det->text;
             textInfo.score = det->score;
             MapText* pNewMT = new MapText(pKF, plane_world, textInfo, mpMap);
-
+            // --- [语义初始化] ---
+            float init_cost = CalculateSemanticCost(pNewMT, pKF, textInfo);
+            TextInfo init_info = textInfo;
+            init_info.score_semantic = init_cost;
+            pNewMT->UpdateSemanticInfo(init_info);
+            // ---------------------
             mpMap->AddMapText(pNewMT);
             pKF->mvpMapTexts[i] = pNewMT;
             pNewMT->AddObservation(pKF, i);
+            cout << "[CreateNewTextLandmarks] Created new MapText " << pNewMT->mnId << " ('" << textInfo.mean << "') in KeyFrame " << pKF->mnId << "score_semantic" << textInfo.score_semantic << std::endl;
         }
     }
 }
@@ -2488,6 +2494,31 @@ bool Tracking::TextJudgeSingle(MapText* obj, const int &threshcos, const int &th
     // 所有检查都通过，认为这是一个可靠的观测
     return true;
 }
+
+float Tracking::CalculateSemanticCost(MapText* pMT, KeyFrame* pKF, const TextInfo& newInfo)
+{
+    // 几何代价 g_geo
+    float g_geo = 0.0f;
+    cv::Mat Ow = pKF->GetCameraCenter();
+    Eigen::Vector3d camCenter(Ow.at<float>(0), Ow.at<float>(1), Ow.at<float>(2));
+    Eigen::Vector4d plane_world = pMT->GetWorldPlane();
+    Eigen::Vector3d n_w = plane_world.head<3>().normalized();
+    Eigen::Vector3d p_w = -plane_world[3] * n_w;  // 平面上一点
+
+    double distance = (p_w - camCenter).norm();
+    Eigen::Vector3d view = (p_w - camCenter).normalized();
+    double cos_angle = std::abs(view.dot(n_w));
+
+    const float w_view = 10.0f;  // TextSLAM 论文参数
+    g_geo = distance + w_view * (1.0f - cos_angle);
+
+    // 语义代价 g_mean
+    const float w_mean = 200.0f;
+    float g_mean = (1.0f - newInfo.score) * w_mean;
+
+    return g_geo + g_mean;
+}
+
 
 
 double Tracking::get_mean_iou(std::vector<Ellipsoid, Eigen::aligned_allocator<Ellipsoid>> ellipsoids_tmp,

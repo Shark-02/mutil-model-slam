@@ -69,6 +69,17 @@ public:
 
     // --- TODO: 高级功能接口 ---
 
+    // 更新语义信息：如果新的 TextInfo 更优（score_semantic 更低），则替换
+    void UpdateSemanticInfo(const TextInfo& newInfo);
+
+    // 地标融合：标记为被替换
+    void SetReplaced(MapText* pMT);
+    bool IsInKeyFrame(KeyFrame* pKF);
+
+    // 获取文本内容（便于语义匹配）
+    std::string GetText() const;
+    TextInfo GetTextInfo() const;
+
     // 用于回环检测后的地标融合
     void Replace(MapText* pMT);
     MapText* GetReplaced();
@@ -111,7 +122,7 @@ protected:
     Map* mpMap;
 
     // 线程锁
-    std::mutex mMutexFeatures;
+    mutable std::mutex mMutexFeatures;
     std::mutex mMutexPose;
 };
 

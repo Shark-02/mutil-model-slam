@@ -1,8 +1,3 @@
-##List of Known Dependencies
-###VOOM version 1.0
-
-In this document we list all the pieces of code included by VOOM and linked libraries that are not the property of the authors of VOOM.
-
 
 #####Code in **src** and **include** folders
 

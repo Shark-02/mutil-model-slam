@@ -19,17 +19,17 @@ int TextMatcher::SearchTextByProjection(Frame &F, const std::vector<MapText*> &v
     int nMatches = 0;  
     // 使用一个布尔向量来确保每个2D检测框只被匹配一次
     std::vector<bool> vbMatchedDetection(F.vTextDetections.size(), false);
-    std::cout << "[TextMatcher] Frame " << F.mnId
+    /*std::cout << "[TextMatcher] Frame " << F.mnId
               << " #detections=" << F.vTextDetections.size()
-              << " #candidates=" << vpMapTexts.size() << std::endl;
+              << " #candidates=" << vpMapTexts.size() << std::endl;*/
 
     // 遍历所有可见的3D文本地标
     for (MapText* pMT : vpMapTexts)
     {
         if (!pMT || pMT->isBad())
             continue;
-        std::cout << "[TextMatcher] trying MapText " << pMT->mnId
-                  << " text='" << pMT->mTextInfo.mean << "'" << std::endl;
+        /*std::cout << "[TextMatcher] trying MapText " << pMT->mnId
+                  << " text='" << pMT->mTextInfo.mean << "'" << std::endl;*/
 
         // 阶段一: 几何投影
         cv::Rect2f proj_bbox;
@@ -61,8 +61,8 @@ int TextMatcher::SearchTextByProjection(Frame &F, const std::vector<MapText*> &v
             continue;
         }
 
-        std::cout << "  -> proj_bbox: [" << proj_bbox.width << " x " << proj_bbox.height
-                  << " from (" << proj_bbox.x << "," << proj_bbox.y << ")]" << std::endl;
+        /*std::cout << "  -> proj_bbox: [" << proj_bbox.width << " x " << proj_bbox.height
+                  << " from (" << proj_bbox.x << "," << proj_bbox.y << ")]" << std::endl;*/
 
 
         // 阶段二: 外观验证 (ZNCC预筛选)
@@ -90,25 +90,25 @@ int TextMatcher::SearchTextByProjection(Frame &F, const std::vector<MapText*> &v
             cv::Rect2f det_bbox(det_bbox_vec[0], det_bbox_vec[1], det_bbox_vec[2] - det_bbox_vec[0], det_bbox_vec[3] - det_bbox_vec[1]);
 
             float iou = CalculateIoU(proj_bbox, det_bbox);
-            std::cout << "    det " << i << " iou=" << iou << std::endl;
-            std::cout << "    det " << det->text << std::endl;
+            //std::cout << "    det " << i << " iou=" << iou << std::endl;
+            //std::cout << "    det " << det->text << std::endl;
             //if (iou < mfMinIoU) continue;
 
             float text_sim = 1.0f - (float)LevenshteinDistance(pMT->mTextInfo.mean, det->text) / std::max(pMT->mTextInfo.mean.length(), det->text.length());
-            std::cout << " text_sim=" << text_sim << std::endl;
+            //std::cout << " text_sim=" << text_sim << std::endl;
             if(iou < mfMinIoU && text_sim < mfMinTextSimilarity) continue;
             //if (text_sim < mfMinTextSimilarity) continue;
 
 
             float current_score = iou + text_sim;
-            std::cout << " current_score=" << current_score << std::endl;
+            //std::cout << " current_score=" << current_score << std::endl;
 
             if (current_score > max_score)
             {
                 max_score = current_score;
                 best_match_idx = i;
-                std::cout << " max_score=" << max_score << std::endl;
-                std::cout << " best_match_idx=" << best_match_idx << std::endl;
+                /*std::cout << " max_score=" << max_score << std::endl;
+                std::cout << " best_match_idx=" << best_match_idx << std::endl;*/
             }
         }
 
@@ -119,8 +119,8 @@ int TextMatcher::SearchTextByProjection(Frame &F, const std::vector<MapText*> &v
 
             vbMatchedDetection[best_match_idx] = true; // 标记此检测框已被使用
             nMatches++;
-            std::cout << "Frame " << F.mnId << " matched detection " << best_match_idx 
-          << " with MapText " << pMT->mnId << std::endl;
+            /*std::cout << "Frame " << F.mnId << " matched detection " << best_match_idx 
+          << " with MapText " << pMT->mnId << std::endl;*/
         }
     }
     return nMatches;

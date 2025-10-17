@@ -159,6 +159,9 @@ public:
         return current_mean_depth_;
     }
 
+    //ADDED BY YU FOR TEXTFUSION
+    float CalculateSemanticCost(MapText* pMT, KeyFrame* pKF, const TextInfo& newInfo);
+
     /*Graph* GetCurrentFrameGraph(){
         return current_frame_graph_;
     }*/
