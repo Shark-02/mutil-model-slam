@@ -68,6 +68,8 @@ public:
     void RequestFinish();
     bool isFinished();
 
+    void AddRecentAddedMapText(MapText* pMT);
+
     int KeyframesInQueue(){
         unique_lock<std::mutex> lock(mMutexNewKFs);
         return mlNewKeyFrames.size();
@@ -86,6 +88,14 @@ protected:
     void SearchByObjects();
 
     void KeyFrameCulling();
+
+    //文本
+    void TextStatusUpdate();
+    void FuseTextLandmarks();
+    void TextLandmarkCulling();
+    double ComputeTextSimilarity(const std::string& s1, const std::string& s2);
+    std::list<MapText*> mlpRecentAddedMapTexts;
+    std::mutex mMutexRecentAddedMapTexts;
 
     cv::Mat ComputeF12(KeyFrame* &pKF1, KeyFrame* &pKF2);
 

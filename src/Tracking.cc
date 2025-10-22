@@ -1403,14 +1403,15 @@ bool Tracking::TrackWithMotionModel()
     }
 
     //std::vector<MapText*> vMapTexts = mpMap->GetAllMapTexts(TEXTIMMATURE);
-    std::vector<MapText*> vMapTextIM;
-    std::vector<MapText*> vMapTexts = mpMap->GetAllMapTexts();
-    for(MapText* pMT : vMapTexts)
-    {
-        if(pMT && !pMT->isBad() && pMT->mState == TEXTIMMATURE)
-            vMapTextIM.push_back(pMT);
-    }
-    UpdateTextStatus(vMapTextIM);
+    //update textstatus
+    // std::vector<MapText*> vMapTextIM;
+    // std::vector<MapText*> vMapTexts = mpMap->GetAllMapTexts();
+    // for(MapText* pMT : vMapTexts)
+    // {
+    //     if(pMT && !pMT->isBad() && pMT->mState == TEXTIMMATURE)
+    //         vMapTextIM.push_back(pMT);
+    // }
+    // UpdateTextStatus(vMapTextIM);
 
     return nmatchesMap>=10;
 }
@@ -1455,11 +1456,11 @@ bool Tracking::TrackLocalMap(bool use_object)
         }
     }
     // Update Texts Statistics
-    std::vector<MapText*> vpCurrentTextObs;
-    for(MapText* pMT : mCurrentFrame.mvpMapTexts) { if(pMT) vpCurrentTextObs.push_back(pMT); }
-    std::sort(vpCurrentTextObs.begin(), vpCurrentTextObs.end());
-    vpCurrentTextObs.erase(std::unique(vpCurrentTextObs.begin(), vpCurrentTextObs.end()), vpCurrentTextObs.end());
-    UpdateTextStatus(vpCurrentTextObs);
+    // std::vector<MapText*> vpCurrentTextObs;
+    // for(MapText* pMT : mCurrentFrame.mvpMapTexts) { if(pMT) vpCurrentTextObs.push_back(pMT); }
+    // std::sort(vpCurrentTextObs.begin(), vpCurrentTextObs.end());
+    // vpCurrentTextObs.erase(std::unique(vpCurrentTextObs.begin(), vpCurrentTextObs.end()), vpCurrentTextObs.end());
+    // UpdateTextStatus(vpCurrentTextObs);
 
     // Decide if the tracking was succesful
     // More restrictive if there was a relocalization recently
@@ -2317,65 +2318,66 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
             mpMap->AddMapText(pNewMT);
             pKF->mvpMapTexts[i] = pNewMT;
             pNewMT->AddObservation(pKF, i);
+            if (mpLocalMapper) mpLocalMapper->AddRecentAddedMapText(pNewMT);
             cout << "[CreateNewTextLandmarks] Created new MapText " << pNewMT->mnId << " ('" << init_info.mean << "') in KeyFrame " << pKF->mnId << "score_semantic" << init_info.score_semantic << std::endl;
         }
     }
 }
 
-void Tracking::UpdateTextStatus(vector<MapText*> &vTexts)
-{
-    // 设置一些判断阈值
-    const int Pym = 0; // 使用第0层金字塔图像
-    const int threshOut = 3; // 投影点距离图像边缘的最小像素距离
-    const double threshcos = 0.5; // 文本平面法向量与相机光轴夹角的余弦阈值
-    const double threshZNCC = -3.0; // ZNCC相似度阈值, -3.0表示暂时不使用
+// void Tracking::UpdateTextStatus(vector<MapText*> &vTexts)
+// {
+//     // 设置一些判断阈值
+//     const int Pym = 0; // 使用第0层金字塔图像
+//     const int threshOut = 3; // 投影点距离图像边缘的最小像素距离
+//     const double threshcos = 0.5; // 文本平面法向量与相机光轴夹角的余弦阈值
+//     const double threshZNCC = -3.0; // ZNCC相似度阈值, -3.0表示暂时不使用
 
-    for(size_t itext=0; itext<vTexts.size(); itext++)
-    {
-        // 1. 只处理“不成熟”的地标
-        if(vTexts[itext]->mState != TEXTIMMATURE)
-            continue;
+//     for(size_t itext=0; itext<vTexts.size(); itext++)
+//     {
+//         // 1. 只处理“不成熟”的地标
+//         if(vTexts[itext]->mState != TEXTIMMATURE)
+//             continue;
 
-        MapText* obj = vTexts[itext];
+//         MapText* obj = vTexts[itext];
 
-        // 2. 判断地标在当前帧是否“健康”可见
-        bool Obj_OK = TextJudgeSingle(obj, threshcos, threshOut, threshZNCC, Pym);
-        if(!Obj_OK)
-            continue;
+//         // 2. 判断地标在当前帧是否“健康”可见
+//         bool Obj_OK = TextJudgeSingle(obj, threshcos, threshOut, threshZNCC, Pym);
+//         if(!Obj_OK)
+//             continue;
 
-        // 3. 如果可见，增加观测次数并进行优化
-        obj->mnFound++;
+//         // 3. 如果可见，增加观测次数并进行优化
+//         obj->mnFound++;
 
-        /*
-        //TODO 做一个平面参数优化器，用来优化maptext的参数
-        // ------------------------------------------------------------------
-        // 核心步骤：优化平面参数。
-        // ------------------------------------------------------------------
-        // TextSLAM 在这里调用了基于 Ceres 的复杂优化器 coOptimizer->ThetaOptimMultiFs()
-        // 这是一个巨大的工程，涉及到多帧图像的光度误差最小化。
-        // 在您的项目中，您可以先用一个简化逻辑代替，后续再实现完整的优化器。
-        // 简化逻辑：我们暂时假设每次观测都是可靠的，直接检查观测次数。
-        */
-        bool optimization_successful = true; // 假设优化成功
+//         /*
+//         //TODO 做一个平面参数优化器，用来优化maptext的参数
+//         // ------------------------------------------------------------------
+//         // 核心步骤：优化平面参数。
+//         // ------------------------------------------------------------------
+//         // TextSLAM 在这里调用了基于 Ceres 的复杂优化器 coOptimizer->ThetaOptimMultiFs()
+//         // 这是一个巨大的工程，涉及到多帧图像的光度误差最小化。
+//         // 在您的项目中，您可以先用一个简化逻辑代替，后续再实现完整的优化器。
+//         // 简化逻辑：我们暂时假设每次观测都是可靠的，直接检查观测次数。
+//         */
+//         bool optimization_successful = true; // 假设优化成功
 
-        if(!optimization_successful){
-            obj->mState = TEXTBAD; // 如果优化失败，则标记为坏点
-            continue;
-        }
+//         if(!optimization_successful){
+//             obj->mState = TEXTBAD; // 如果优化失败，则标记为坏点
+//             continue;
+//         }
 
-        // 4. 检查是否满足“转正”条件
-        const int minObservationsForPromotion = 4; // 至少需要稳定观测4次
-        // TextSLAM 还检查了优化前后平面法向量的稳定性（夹角余弦值 > 0.9）
-        // double cosAngleAfterOptimization = ...; // 计算优化前后法向量的点积
-        // if(cosAngleAfterOptimization < 0.9) continue;
+//         // 4. 检查是否满足“转正”条件
+//         const int minObservationsForPromotion = 4; // 至少需要稳定观测4次
+//         // TextSLAM 还检查了优化前后平面法向量的稳定性（夹角余弦值 > 0.9）
+//         // double cosAngleAfterOptimization = ...; // 计算优化前后法向量的点积
+//         // if(cosAngleAfterOptimization < 0.9) continue;
 
-        if(obj->mnFound  >= minObservationsForPromotion)
-        {
-            obj->mState = TEXTGOOD; // 晋升为“良好”地标
-            std::cout << "[TextSLAM Logic] MapText " << obj->mnId << " ('" << obj->mTextInfo.mean << "') promoted to GOOD." << std::endl;
-        }
-    }
-}
+//         if(obj->mnFound  >= minObservationsForPromotion)
+//         {
+//             obj->mState = TEXTGOOD; // 晋升为“良好”地标
+//             std::cout << "[TextSLAM Logic] MapText " << obj->mnId << " ('" << obj->mTextInfo.mean << "') promoted to GOOD." << std::endl;
+//         }
+//     }
+// }
 
 //ADDED BY YU FOR TO SEARCH LOCAL TEXTOBJS
 void Tracking::UpdateLocalMapTexts(vector<KeyFrame*> neighbor_kfs)

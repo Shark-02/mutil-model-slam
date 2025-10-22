@@ -70,6 +70,9 @@ void LocalMapping::Run()
             // Check recent Objects
             ObjectCulling();
 
+            //新增：文本地标状态更新
+            TextStatusUpdate();
+
             // Triangulate new MapPoints
             CreateNewMapPoints();
 
@@ -238,6 +241,14 @@ void LocalMapping::ProcessNewKeyFrame()
     mpMap->AddKeyFrame(mpCurrentKeyFrame);
 }
 
+void LocalMapping::AddRecentAddedMapText(MapText* pMT)
+{
+    if(!pMT) return;
+    std::unique_lock<std::mutex> lock(mMutexRecentAddedMapTexts);
+    mlpRecentAddedMapTexts.push_back(pMT);
+}
+
+
 void LocalMapping::ObjectCulling()
 {
     list<Object*>::iterator lit = mlpRecentAddedObjects.begin();
@@ -260,6 +271,76 @@ void LocalMapping::ObjectCulling()
             lit++;
     }
 }
+
+void LocalMapping::TextStatusUpdate()
+{
+    std::unique_lock<std::mutex> lock(mMutexRecentAddedMapTexts);
+    if (mlpRecentAddedMapTexts.empty())
+        return;
+
+    list<MapText*>::iterator lit = mlpRecentAddedMapTexts.begin();
+    const unsigned long int nCurrentKFid = mpCurrentKeyFrame->mnId;
+
+    // ---- 参数配置（可根据实验调整） ----
+    const int minObsForGood = 3;        // 晋升所需最少观测次数
+    const int minAgeForGood = 2;        // 至少经过2个KF考验
+    const int maxAgeForCulling = 10;     // IMMATURE状态最大存活周期
+
+    while (lit != mlpRecentAddedMapTexts.end())
+    {
+        MapText* pMT = *lit;
+
+        if (!pMT || pMT->isBad())
+        {
+            lit = mlpRecentAddedMapTexts.erase(lit);
+            continue;
+        }
+
+        if (pMT->mState == TEXTIMMATURE)
+        {
+            int nObs = pMT->Observations();
+            int nAge = nCurrentKFid - pMT->mnFirstKFid;
+
+            // ---------- 晋升逻辑 ----------
+            if (nObs >= minObsForGood && nAge >= minAgeForGood)
+            {
+                // TODO: 可插入 ThetaOptimMultiFs 优化或几何一致性检查
+                bool optimization_successful = true;
+                double cosAngleAfterOptimization = 1.0;
+
+                if (optimization_successful && cosAngleAfterOptimization > 0.9)
+                {
+                    pMT->mState = TEXTGOOD;
+                    std::cout << "[LocalMapping] MapText " << pMT->mnId
+                              << " ('" << pMT->GetText()
+                              << "') promoted to GOOD. Obs=" << nObs
+                              << " Age=" << nAge << std::endl;
+
+                    lit = mlpRecentAddedMapTexts.erase(lit);
+                    continue;
+                }
+            }
+
+            // ---------- 剔除逻辑 ----------
+            if (nAge >= maxAgeForCulling && nObs < minObsForGood)
+            {
+                pMT->SetBadFlag();
+                lit = mlpRecentAddedMapTexts.erase(lit);
+                std::cout << "[LocalMapping] MapText " << pMT->mnId
+                          << " ('" << pMT->GetText()
+                          << "') culled (IMMATURE, few obs)." << std::endl;
+                continue;
+            }
+        }
+
+        // 已经变为 GOOD 或 BAD 的直接移除
+        if (pMT->mState != TEXTIMMATURE)
+            lit = mlpRecentAddedMapTexts.erase(lit);
+        else
+            ++lit;
+    }
+}
+
 
 void LocalMapping::MapPointCulling()
 {

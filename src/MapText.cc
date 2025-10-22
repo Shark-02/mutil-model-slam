@@ -15,6 +15,7 @@ MapText::MapText(KeyFrame* pRefKF, const Eigen::Vector4d& theta,
       mnVisible(1), mnFound(1)
 {
     mnId = nNextId++;
+    mnFirstKFid = pRefKF->mnId;
 }
 
 Eigen::Vector4d MapText::GetWorldPlane()
@@ -330,6 +331,16 @@ void MapText::UpdateSemanticInfo(const TextInfo& newInfo)
     std::unique_lock<std::mutex> lock(mMutexFeatures);
     if(newInfo.score_semantic < mTextInfo.score_semantic)
         mTextInfo = newInfo;
+}
+
+TextStatus MapText::GetState() const {
+    std::unique_lock<std::mutex> lock(mMutexFeatures);
+    return mState;
+}
+
+void MapText::SetState(const TextStatus &s) {
+    std::unique_lock<std::mutex> lock(mMutexFeatures);
+    mState = s;
 }
 
 void MapText::SetReplaced(MapText* pMT)

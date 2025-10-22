@@ -71,6 +71,8 @@ public:
 
     // 更新语义信息：如果新的 TextInfo 更优（score_semantic 更低），则替换
     void UpdateSemanticInfo(const TextInfo& newInfo);
+    TextStatus GetState() const;
+    void SetState(const TextStatus &s);
 
     // 地标融合：标记为被替换
     void SetReplaced(MapText* pMT);
@@ -98,6 +100,8 @@ public:
 
     // 语义信息
     TextInfo mTextInfo;
+
+    long unsigned int mnFirstKFid;  // 记录创建时的关键帧ID
 
 protected:
     // --- 内部数据与锁 ---
