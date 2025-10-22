@@ -225,6 +225,7 @@ void LocalMapping::ProcessNewKeyFrame()
         }
     }    
 
+    //物体
     for(auto [node_id, attribute] : mpCurrentKeyFrame->graph->attributes){
         auto obj = attribute.obj;
         if(obj){
@@ -233,6 +234,9 @@ void LocalMapping::ProcessNewKeyFrame()
             }
         }
     }
+
+    //文本
+    UpdateTextObservations(mpCurrentKeyFrame);
 
     // Update links in the Covisibility Graph
     mpCurrentKeyFrame->UpdateConnections();
@@ -272,6 +276,32 @@ void LocalMapping::ObjectCulling()
     }
 }
 
+void LocalMapping::UpdateTextObservations(KeyFrame* pKF)
+{
+    if(!pKF) return;
+
+    const std::vector<MapText*>& vpTexts = pKF->GetMapTextMatches();
+
+    int nAdded = 0;
+    for(size_t i = 0; i < vpTexts.size(); ++i)
+    {
+        MapText* pMT = vpTexts[i];
+        if(!pMT || pMT->isBad()) continue;
+
+        // 检查地标是否已经记录过该关键帧
+        if(!pMT->IsInKeyFrame(pKF))
+        {
+            pMT->AddObservation(pKF, i);
+            nAdded++;
+        }
+    }
+
+    if(nAdded > 0)
+        std::cout << "[LocalMapping] Updated " << nAdded
+                  << " text observations for KF " << pKF->mnId << std::endl;
+}
+
+
 void LocalMapping::TextStatusUpdate()
 {
     std::unique_lock<std::mutex> lock(mMutexRecentAddedMapTexts);
@@ -295,6 +325,11 @@ void LocalMapping::TextStatusUpdate()
             lit = mlpRecentAddedMapTexts.erase(lit);
             continue;
         }
+
+        std::cout << "MapText " << pMT->mnId << " obs=" << pMT->Observations()
+          << " age=" << (nCurrentKFid - pMT->mnFirstKFid)
+          << " state=" << pMT->mState << std::endl;
+
 
         if (pMT->mState == TEXTIMMATURE)
         {

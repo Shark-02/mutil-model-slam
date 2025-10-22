@@ -93,6 +93,7 @@ protected:
     void TextStatusUpdate();
     void FuseTextLandmarks();
     void TextLandmarkCulling();
+    void UpdateTextObservations(KeyFrame* pKF);
     double ComputeTextSimilarity(const std::string& s1, const std::string& s2);
     std::list<MapText*> mlpRecentAddedMapTexts;
     std::mutex mMutexRecentAddedMapTexts;
