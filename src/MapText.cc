@@ -15,7 +15,7 @@ MapText::MapText(KeyFrame* pRefKF, const Eigen::Vector4d& theta,
       mnVisible(1), mnFound(1)
 {
     mnId = nNextId++;
-    mnFirstKFid = pRefKF->mnId;
+    mnFirstKFid = (pRefKF ? (long long)pRefKF->mnId : -1);
 }
 
 Eigen::Vector4d MapText::GetWorldPlane()

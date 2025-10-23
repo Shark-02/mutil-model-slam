@@ -101,7 +101,7 @@ public:
     // 语义信息
     TextInfo mTextInfo;
 
-    long unsigned int mnFirstKFid;  // 记录创建时的关键帧ID
+    long long mnFirstKFid;  // 记录创建时的关键帧ID
 
 protected:
     // --- 内部数据与锁 ---

@@ -309,8 +309,7 @@ void LocalMapping::TextStatusUpdate()
         return;
 
     list<MapText*>::iterator lit = mlpRecentAddedMapTexts.begin();
-    const unsigned long int nCurrentKFid = mpCurrentKeyFrame->mnId;
-
+    long long nCurrentKFid = (long long) mpCurrentKeyFrame->mnId;
     // ---- 参数配置（可根据实验调整） ----
     const int minObsForGood = 3;        // 晋升所需最少观测次数
     const int minAgeForGood = 2;        // 至少经过2个KF考验
@@ -334,7 +333,13 @@ void LocalMapping::TextStatusUpdate()
         if (pMT->mState == TEXTIMMATURE)
         {
             int nObs = pMT->Observations();
-            int nAge = nCurrentKFid - pMT->mnFirstKFid;
+            long long nAge = (pMT->mnFirstKFid >= 0) ? (nCurrentKFid - pMT->mnFirstKFid) : -1;
+            if (nAge < 0) {
+                // 防御性日志（便于调试）
+                std::cout << "[LocalMapping] Warning: invalid mnFirstKFid for MapText " << pMT->mnId << std::endl;
+                // 不做剔除判断，等下次再评估
+                ++lit; continue;
+            }
 
             // ---------- 晋升逻辑 ----------
             if (nObs >= minObsForGood && nAge >= minAgeForGood)
