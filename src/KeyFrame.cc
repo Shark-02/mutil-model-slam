@@ -544,6 +544,10 @@ void KeyFrame::SetBadFlag()
     for(size_t i=0; i<mvpMapPoints.size(); i++)
         if(mvpMapPoints[i])
             mvpMapPoints[i]->EraseObservation(this);
+    
+    for(size_t i=0; i<mvpMapTexts.size(); i++)
+        if(mvpMapTexts[i])
+            mvpMapTexts[i]->EraseObservation(this);
 
     {
         unique_lock<mutex> lock(mMutexConnections);

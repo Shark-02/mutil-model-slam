@@ -97,6 +97,7 @@ void LocalMapping::Run()
                 //std::cout<<"lm4"<<std::endl;
                 // Check redundant local Keyframes
                 KeyFrameCulling();
+                TextLandmarkCulling();
                 //std::cout<<"lm5"<<std::endl;
             }
             
@@ -816,6 +817,107 @@ void LocalMapping::FuseTextLandmarks()
 
     if (nFused > 0)
         cout << "[LocalMapping] ✓ Fused " << nFused << " text landmarks." << endl;
+}
+
+void LocalMapping::TextLandmarkCulling()
+{
+    // 获取当前活动地图中的所有文本地标
+    // 注意：GetAllMapTexts() 内部应该处理好锁
+    std::vector<MapText*> vpAllMapTexts = mpMap->GetAllMapTexts();
+
+    if (vpAllMapTexts.empty())
+        return;
+
+    int culledCount = 0;
+    const unsigned long int nCurrentKFid = mpCurrentKeyFrame->mnId; // 用于可能的基于时间的剔除
+
+    // --- 参数配置 ---
+    // 对于已经是 TEXTGOOD 状态的地标，如果观测数变得太少，则剔除
+    const int minObservationsForGood = 2; // GOOD 状态至少需要的观测数 (比晋升时的要求低)
+    // 可选：类似于 TextSLAM 论文 [cite: 366] 的剔除条件
+    // const float maxBadRatio = 0.9f; // 如果坏帧比例过高
+    // const int maxBadFrames = 40;   // 如果坏帧绝对数量过多
+    // 注意：实现这些需要 MapText 跟踪好帧/坏帧观测次数，这里暂时不用
+
+    for (MapText* pMT : vpAllMapTexts)
+    {
+        // 基本检查
+        if (!pMT || pMT->isBad()) // 跳过空指针或已标记为坏点的地标
+            continue;
+
+        TextStatus state = pMT->GetState(); // 获取当前状态
+
+        // --- 仅检查 GOOD 状态的地标 ---
+        // IMMATURE 状态的剔除主要在 TextStatusUpdate 中完成
+        if (state == TEXTGOOD)
+        {
+            int nObs = pMT->Observations(); // 获取当前观测数
+
+            // 条件1: 观测次数是否低于维持 GOOD 状态的最低要求？
+            // 这通常发生在关联的关键帧被 KeyFrameCulling 移除后
+            if (nObs < minObservationsForGood)
+            {
+                pMT->SetBadFlag(); // 标记为坏点
+                culledCount++;
+                std::cout << "[LocalMapping] Culled GOOD MapText " << pMT->mnId
+                          << " ('" << pMT->GetText() << "') due to low observation count: "
+                          << nObs << " (min required: " << minObservationsForGood << ")" << std::endl;
+                continue; // 处理下一个
+            }
+
+            // 可选条件2: 检查观测质量 (类似TextSLAM论文 [cite: 366])
+            // 需要 MapText 记录被认为是内点/外点的帧数
+            /*
+            int goodFrames = pMT->GetGoodObservationsCount(); // 假设有这个函数
+            int badFrames = pMT->GetBadObservationsCount();   // 假设有这个函数
+            if (badFrames > maxBadFrames || (goodFrames > 0 && (float)badFrames / goodFrames > maxBadRatio))
+            {
+                pMT->SetBadFlag();
+                culledCount++;
+                std::cout << "[LocalMapping] Culled GOOD MapText " << pMT->mnId
+                          << " ('" << pMT->GetText() << "') due to poor observation quality (bad/good): "
+                          << badFrames << "/" << goodFrames << std::endl;
+                continue;
+            }
+            */
+
+             // 可选条件3：如果需要，可以添加基于找到率 (Found Ratio) 的剔除
+             // 需要 MapText 像 MapPoint 一样维护 mnVisible 和 mnFound
+             /*
+             if (pMT->GetFoundRatio() < 0.25f && pMT->Observations() > 3) // 仅在有足够观测时检查
+             {
+                 pMT->SetBadFlag();
+                 culledCount++;
+                 std::cout << "[LocalMapping] Culled GOOD MapText " << pMT->mnId
+                           << " ('" << pMT->GetText() << "') due to low found ratio: "
+                           << pMT->GetFoundRatio() << std::endl;
+                 continue;
+             }
+             */
+        }
+        // 对于 IMMATURE 状态，主要依赖 TextStatusUpdate 进行剔除
+        // 也可以在这里添加一个非常宽松的绝对年龄上限（例如，存在超过 50 个关键帧还未转正）
+        /*
+        else if (state == TEXTIMMATURE)
+        {
+            long long firstKFid = pMT->mnFirstKFid;
+            long long kfSpan = (firstKFid >= 0) ? (nCurrentKFid - firstKFid) : -1;
+            const int absoluteMaxKFSpan = 50; // 绝对最大存活期
+            if (kfSpan > absoluteMaxKFSpan)
+            {
+                 pMT->SetBadFlag();
+                 culledCount++;
+                 std::cout << "[LocalMapping] Culled IMMATURE MapText " << pMT->mnId
+                           << " ('" << pMT->GetText() << "') due to exceeding absolute max KFSpan: "
+                           << kfSpan << std::endl;
+                 continue;
+            }
+        }
+        */
+    }
+
+    if (culledCount > 0)
+        std::cout << "[LocalMapping] ✓ TextLandmarkCulling removed " << culledCount << " landmarks." << std::endl;
 }
 
 void LocalMapping::SearchInNeighbors()
