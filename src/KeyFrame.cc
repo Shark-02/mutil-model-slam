@@ -637,6 +637,7 @@ void KeyFrame::SetBadFlag()
 void KeyFrame::AddMapTextMatch(MapText* pMT, const size_t &idx)
 {
     std::unique_lock<std::mutex> lock(mMutexFeatures);
+    if (idx >= mvpMapTexts.size()) return;  // 防越界
     mvpMapTexts[idx] = pMT;
 }
 

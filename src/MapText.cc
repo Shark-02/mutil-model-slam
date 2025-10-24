@@ -136,48 +136,63 @@ bool MapText::isBad()
 
 void MapText::Replace(MapText* pMT)
 {
-    if(pMT->mnId == mnId)
+    if (!pMT || pMT->mnId == mnId)
         return;
 
-    int nvisible, nfound;
+    int nvisible = 0, nfound = 0;
     std::map<KeyFrame*, size_t> obs;
+
     {
         std::unique_lock<std::mutex> lock1(mMutexFeatures);
         std::unique_lock<std::mutex> lock2(pMT->mMutexFeatures);
 
-        obs = mObservations;
-        mObservations.clear();
-        mbBad = true;   // 当前地标标记为无效
-        mpReplaced = pMT;  // 指向替代它的地标
+        // --- 防御性检查 ---
+        if (mbBad) return;
+
+        // --- 转移观测 ---
+        obs = mObservations;  // 拷贝旧观测
+        mObservations.clear(); // 清空自身
+        mbBad = true;          // 标记为坏点
+        mpReplaced = pMT;      // 指向被替代者
         nvisible = mnVisible;
         nfound = mnFound;
     }
 
-    // 将当前地标的所有观测转移到新的地标中
-    for(auto& obs_kf : obs)
+    // --- 遍历旧观测并迁移 ---
+    for (auto& [pKF, idx] : obs)
     {
-        KeyFrame* pKF = obs_kf.first;
-        size_t idx = obs_kf.second;
+        if (!pKF || pKF->isBad()) continue;
 
-        // 如果新的地标还未在该关键帧中被观测，则添加
-        if(!pMT->IsInKeyFrame(pKF))
+        // 如果新地标未在该关键帧中被观测，则添加
+        if (!pMT->IsInKeyFrame(pKF))
         {
             pMT->AddObservation(pKF, idx);
-            pKF->AddMapTextMatch(pMT, idx);
+            pKF->AddMapTextMatch(pMT, idx); // 
         }
         else
         {
-            // 否则移除旧的观测
+            // 如果已有相同索引，移除旧观测
             pKF->EraseMapTextMatch(idx);
         }
     }
 
-    pMT->mnVisible += nvisible;
-    pMT->mnFound += nfound;
-    //pMT->ComputeDistinctiveDescriptors(); // TODO: 如果有特征描述符的话可实现
+    // --- 累积观测信息 ---
+    {
+        std::unique_lock<std::mutex> lock(pMT->mMutexFeatures);
+        pMT->mnVisible += nvisible;
+        pMT->mnFound += nfound;
+        pMT->mnFirstKFid = std::min(pMT->mnFirstKFid, mnFirstKFid);
+    }
 
-    mpMap->EraseMapText(this);
+    // --- 从地图中清除旧地标 ---
+    if (mpMap)
+        mpMap->EraseMapText(this);
+
+    std::cout << "[MapText::Replace] MapText " << mnId
+              << " replaced by " << pMT->mnId
+              << " ('" << pMT->GetText() << "')" << std::endl;
 }
+
 
 MapText* MapText::GetReplaced()
 {

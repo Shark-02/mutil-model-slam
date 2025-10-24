@@ -35,6 +35,9 @@ public:
     float CalculateZNCC(const cv::Mat& img1, const cv::Rect2f& roi1, 
                         const cv::Mat& img2, const cv::Rect2f& roi2);
 
+    // 语义关联辅助函数
+    int LevenshteinDistance(const std::string &s1, const std::string &s2);
+
     /**
      * @brief 主函数：通过三重验证来跟踪地图中的文本地标
      * @param F 当前帧
@@ -48,8 +51,7 @@ private:
     // 几何关联辅助函数
     float CalculateIoU(const cv::Rect2f& r1, const cv::Rect2f& r2);
 
-    // 语义关联辅助函数
-    int LevenshteinDistance(const std::string &s1, const std::string &s2);
+
 
 private:
     float mfZNCCThreshold;

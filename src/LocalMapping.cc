@@ -23,6 +23,7 @@
 #include "ORBmatcher.h"
 #include "Optimizer.h"
 #include "ObjectMatcher.h"
+#include "TextMatcher.h"
 
 #include<mutex>
 #include <unistd.h>
@@ -70,7 +71,9 @@ void LocalMapping::Run()
             // Check recent Objects
             ObjectCulling();
 
-            //新增：文本地标状态更新
+            FuseTextLandmarks();      // 执行融合
+
+            //文本地标状态更新and剔除
             TextStatusUpdate();
 
             // Triangulate new MapPoints
@@ -680,6 +683,139 @@ void LocalMapping::SearchByObjects()
         obj_matcher.SearchInBox(mpCurrentKeyFrame, vMPs, vIndices_in_box);
     }
     
+}
+
+// --- 辅助函数：平面间角度（°） ---
+inline double AngleBetweenPlanes(const Eigen::Vector4d& plane1, const Eigen::Vector4d& plane2)
+{
+    double cosTheta = plane1.head<3>().normalized().dot(plane2.head<3>().normalized());
+    cosTheta = std::max(-1.0, std::min(1.0, cosTheta));
+    return std::acos(cosTheta) * 180.0 / M_PI;
+}
+
+// --- 辅助函数：点到平面距离 ---
+inline double PointToPlaneDist(const Eigen::Vector3d& pt, const Eigen::Vector4d& plane)
+{
+    return std::abs(plane.head<3>().dot(pt) + plane[3]);
+}
+
+// --- 辅助函数：语义相似度 ---
+inline float ComputeSemanticSim(const std::string& s1, const std::string& s2)
+{
+    int maxLen = std::max(s1.size(), s2.size());
+    if (maxLen == 0) return 1.0f;
+    TextMatcher textMatcher(0, 0, 0);
+    int dist = textMatcher.LevenshteinDistance(s1, s2);
+    return 1.0f - static_cast<float>(dist) / maxLen;
+}
+
+// --- 主函数：文本地标融合 ---
+void LocalMapping::FuseTextLandmarks()
+{
+    KeyFrame* pCurrentKF = mpCurrentKeyFrame;
+    if (!pCurrentKF || pCurrentKF->isBad()) return;
+
+    // 收集当前关键帧及其邻居的文本地标
+    std::set<MapText*> spLocalMapTexts;
+    auto addTexts = [&](KeyFrame* pKF)
+    {
+        if (!pKF || pKF->isBad()) return;
+        const auto& texts = pKF->GetMapTextMatches();
+        for (MapText* pT : texts)
+            if (pT && !pT->isBad()) spLocalMapTexts.insert(pT);
+    };
+
+    addTexts(pCurrentKF);
+    for (KeyFrame* pKFi : pCurrentKF->GetBestCovisibilityKeyFrames(10))
+        addTexts(pKFi);
+
+    if (spLocalMapTexts.size() < 2) return;
+
+    vector<MapText*> vTexts(spLocalMapTexts.begin(), spLocalMapTexts.end());
+    vector<bool> vbFused(vTexts.size(), false);
+    //std::cout << "[LocalMapping] Running FuseTextLandmarks(), candidates=" << spLocalMapTexts.size() << std::endl;
+
+    const float minSemanticSim = 0.85f;
+    const double maxAngleDiff = 10.0;   // degrees
+    const double maxPlaneDist = 0.08;   // meters
+    const int minCommonKFs = 2;
+
+    int nFused = 0;
+
+    for (size_t i = 0; i < vTexts.size(); ++i)
+    {
+        MapText* pMT1 = vTexts[i];
+        if (!pMT1 || pMT1->isBad() || vbFused[i]) continue;
+
+        Eigen::Vector4d plane1 = pMT1->GetWorldPlane();
+        Eigen::Vector3d center1 = -plane1.head<3>().normalized() * plane1[3];
+        std::string text1 = pMT1->GetText();
+        auto obs1 = pMT1->GetObservations();
+
+        for (size_t j = i + 1; j < vTexts.size(); ++j)
+        {
+            MapText* pMT2 = vTexts[j];
+            if (!pMT2 || pMT2->isBad() || vbFused[j]) continue;
+
+            // --- Step 1: 语义一致性 ---
+            std::string text2 = pMT2->GetText();
+            float semanticSim = ComputeSemanticSim(text1, text2);
+            if (semanticSim < minSemanticSim) continue;
+
+            // --- Step 2: 几何一致性 ---
+            Eigen::Vector4d plane2 = pMT2->GetWorldPlane();
+            double angleDiff = AngleBetweenPlanes(plane1, plane2);
+            if (angleDiff > maxAngleDiff) continue;
+
+            Eigen::Vector3d center2 = -plane2.head<3>().normalized() * plane2[3];
+            double d12 = PointToPlaneDist(center1, plane2);
+            double d21 = PointToPlaneDist(center2, plane1);
+            if (d12 > maxPlaneDist || d21 > maxPlaneDist) continue;
+
+            // --- Step 3: 共视一致性 ---
+            auto obs2 = pMT2->GetObservations();
+            int nCommon = 0;
+            for (const auto& it : obs1)
+                if (obs2.count(it.first)) nCommon++;
+            if (nCommon < minCommonKFs) continue;
+
+            // --- Step 4: 选择保留者 ---
+            MapText* pKeep = nullptr;
+            MapText* pReplace = nullptr;
+
+            if (pMT1->Observations() > pMT2->Observations()) {
+                pKeep = pMT1; pReplace = pMT2; vbFused[j] = true;
+            } else if (pMT2->Observations() > pMT1->Observations()) {
+                pKeep = pMT2; pReplace = pMT1; vbFused[i] = true;
+            } else {
+                // 状态优先（GOOD 胜出），否则 ID 小者胜
+                if (pMT1->GetState() == TEXTGOOD && pMT2->GetState() != TEXTGOOD)
+                    pKeep = pMT1, pReplace = pMT2, vbFused[j] = true;
+                else if (pMT2->GetState() == TEXTGOOD && pMT1->GetState() != TEXTGOOD)
+                    pKeep = pMT2, pReplace = pMT1, vbFused[i] = true;
+                else if (pMT1->mnId < pMT2->mnId)
+                    pKeep = pMT1, pReplace = pMT2, vbFused[j] = true;
+                else
+                    pKeep = pMT2, pReplace = pMT1, vbFused[i] = true;
+            }
+
+            if (!pKeep || !pReplace || pKeep == pReplace) continue;
+
+            // --- Step 5: 执行融合 ---
+            pReplace->Replace(pKeep);
+            nFused++;
+
+            cout << "[LocalMapping] Fused MapText " << pReplace->mnId << " ('" << pReplace->GetText()
+                 << "') → " << pKeep->mnId << " ('" << pKeep->GetText() << "')"
+                 << " [Sim=" << semanticSim << ", Angle=" << angleDiff
+                 << ", Dist=" << (d12 + d21) / 2.0 << ", CommonKFs=" << nCommon << "]" << endl;
+
+            if (vbFused[i]) break; // 当前已被融合，无需继续
+        }
+    }
+
+    if (nFused > 0)
+        cout << "[LocalMapping] ✓ Fused " << nFused << " text landmarks." << endl;
 }
 
 void LocalMapping::SearchInNeighbors()
