@@ -2198,6 +2198,11 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
     if (!pKF || pKF->vTextDetections.empty())
         return;
 
+    //DELETE 测试输出
+    std::cout << "[TextCreate] KF " << pKF->mnId 
+          << " detections=" << pKF->vTextDetections.size() 
+          << std::endl;
+
     // 遍历该关键帧中的所有文本检测
     for (size_t i = 0; i < pKF->vTextDetections.size(); ++i)
     {
@@ -2213,7 +2218,7 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
         // --- 准入筛选步骤 1: 确保检测框内有足够的有效特征点 ---
         const std::vector<size_t> vFeatureIndices = pKF->GetFeaturesInBox(bbox[0], bbox[2], bbox[1], bbox[3]);
         
-        // **[修改 1]** 提高对初始特征点数量的要求
+        // 提高对初始特征点数量的要求
         const int MIN_FEATURES_FOR_PLANE = 10; // 从至少10个特征点开始拟合平面，比3个点鲁棒得多
         if (vFeatureIndices.size() < MIN_FEATURES_FOR_PLANE) continue;
 
@@ -2226,7 +2231,7 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
         for (const size_t& feat_idx : vFeatureIndices)
         {
             const float d = pKF->mvDepth[feat_idx];
-            // **[修改 2]** 强化深度有效性检查，加入最大深度限制
+            // 强化深度有效性检查，加入最大深度限制
             if (d > 0.1 && d < 10.0) { // 只考虑10厘米到10米范围内的点
                 cv::Mat p3D_world = pKF->UnprojectStereo(feat_idx);
                 if(!p3D_world.empty())
@@ -2239,7 +2244,7 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
 
         if (vPoints3D_world.size() < MIN_FEATURES_FOR_PLANE) continue;
 
-        // **[修改 3]** 检查深度值的一致性，剔除异常值（例如深度跳变巨大的情况）
+        // 检查深度值的一致性，剔除异常值（例如深度跳变巨大的情况）
         cv::Scalar mean, stddev;
         cv::meanStdDev(vDepths, mean, stddev);
         if (stddev[0] > 0.5) // 如果深度标准差大于0.5米，说明这些点很可能不在一个平面上，放弃
@@ -2251,11 +2256,11 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
         Eigen::Vector4d plane_world;
         std::vector<bool> vbInliers;
         
-        // **[修改 4]** 强化RANSAC的成功标准
+        // 强化RANSAC的成功标准
         // 在FitPlaneRANSAC函数内部，建议将成功拟合的inlier阈值从3个点提高到至少5个或更多
         if (FitPlaneRANSAC(vPoints3D_world, plane_world, vbInliers))
         {
-            // **[修改 5]** 对拟合出的平面进行最终的几何合理性检查
+            // 对拟合出的平面进行最终的几何合理性检查
             // 将平面转换到当前关键帧的相机坐标系下
             cv::Mat Twc_ref = pKF->GetPoseInverse();
             Eigen::Matrix4d T_world_cam;
@@ -2274,6 +2279,27 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
             {
                 continue;
             }
+
+            // --------- DELETE 测试 ----------
+            int nInliers = 0;
+            for (bool b : vbInliers) if (b) ++nInliers;
+
+            // mean 和 stddev 在函数中已用 cv::meanStdDev(vDepths, mean, stddev) 计算过，直接使用
+            // 如果你的 mean 变量名不同，请改为你的变量名；通常是 cv::Scalar mean, stddev;
+            double meanDepth = 0.0, stdDepth = 0.0;
+            #ifdef __has_include
+            // 保持极简：如果 mean 已经存在，就使用；否则不打印 mean/stddev
+            #endif
+            // 尝试访问 mean/stddev（在你函数中它们确实存在）
+            try {
+                meanDepth = mean[0];
+                stdDepth = stddev[0];
+            } catch(...) {
+                // 如果没有 mean/stddev，保持为0
+            }
+
+            // -------------------------------------------------------------------
+
 
             // b) 提前试算包围盒角点的3D坐标，检查是否有负深度
             const auto& det_bbox_vec = det->bbox;
@@ -2317,9 +2343,16 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
             // ---------------------
             mpMap->AddMapText(pNewMT);
             pKF->mvpMapTexts[i] = pNewMT;
+            pNewMT->mnFirstKFid = pKF->mnId;
             pNewMT->AddObservation(pKF, i);
             if (mpLocalMapper) mpLocalMapper->AddRecentAddedMapText(pNewMT);
-            cout << "[CreateNewTextLandmarks] Created new MapText " << pNewMT->mnId << " ('" << init_info.mean << "') in KeyFrame " << pKF->mnId << "score_semantic" << init_info.score_semantic << std::endl;
+            std::cout << "[TextCreate] KF=" << pKF->mnId 
+                    << " DetIdx=" << i 
+                    << " text=\"" << det->text << "\""
+                    << " ocr_score=" << det->score
+                    << " mnFirstKFid=" << pNewMT->mnFirstKFid
+                    << " semantic_score=" << init_info.score_semantic
+                    << std::endl;
         }
     }
 }

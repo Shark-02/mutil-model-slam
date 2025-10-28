@@ -296,6 +296,10 @@ void LocalMapping::UpdateTextObservations(KeyFrame* pKF)
         if(!pMT->IsInKeyFrame(pKF))
         {
             pMT->AddObservation(pKF, i);
+            std::cout << " addedObs MapTextID=" << pMT->mnId 
+                    << " text=\"" << pMT->GetText() << "\"" 
+                    << " totalObs=" << pMT->GetObservations().size()
+                    << std::endl;
             nAdded++;
         }
     }
@@ -330,12 +334,16 @@ void LocalMapping::TextStatusUpdate()
         }
 
         std::cout << "MapText " << pMT->mnId << " obs=" << pMT->Observations()
+          << " mcurrentKf" << nCurrentKFid
           << " age=" << (nCurrentKFid - pMT->mnFirstKFid)
           << " state=" << pMT->mState << std::endl;
 
 
         if (pMT->mState == TEXTIMMATURE)
         {
+            // 如果该文字创建在未来关键帧，跳过
+            if (pMT->mnFirstKFid > nCurrentKFid)
+                continue;  
             int nObs = pMT->Observations();
             long long nAge = (pMT->mnFirstKFid >= 0) ? (nCurrentKFid - pMT->mnFirstKFid) : -1;
             if (nAge < 0) {
@@ -701,14 +709,100 @@ inline double PointToPlaneDist(const Eigen::Vector3d& pt, const Eigen::Vector4d&
 }
 
 // --- 辅助函数：语义相似度 ---
-inline float ComputeSemanticSim(const std::string& s1, const std::string& s2)
-{
-    int maxLen = std::max(s1.size(), s2.size());
-    if (maxLen == 0) return 1.0f;
-    TextMatcher textMatcher(0, 0, 0);
-    int dist = textMatcher.LevenshteinDistance(s1, s2);
-    return 1.0f - static_cast<float>(dist) / maxLen;
+inline std::string NormalizeTextForSim(const std::string &s) {
+    // 简单 normalize: 去两侧空格，去控制字符，替换全角符号为半角的常见替换，去重复空格
+    std::string t;
+    t.reserve(s.size());
+    for (char c : s) {
+        // 去掉不可见字符
+        if (c == '\r' || c == '\n' || c == '\t') continue;
+        // 可考虑把全角->半角的处理放在这里（略）
+        t.push_back(c);
+    }
+    // trim spaces
+    size_t start = 0;
+    while (start < t.size() && isspace((unsigned char)t[start])) ++start;
+    size_t end = t.size();
+    while (end > start && isspace((unsigned char)t[end-1])) --end;
+    std::string out = t.substr(start, end-start);
+
+    // Collapse multiple spaces
+    std::string out2;
+    out2.reserve(out.size());
+    bool last_space = false;
+    for (char c: out) {
+        if (isspace((unsigned char)c)) {
+            if (!last_space) { out2.push_back(' '); last_space = true; }
+        } else {
+            out2.push_back(c);
+            last_space = false;
+        }
+    }
+    return out2;
 }
+
+inline float Jaccard2Gram(const std::string &a, const std::string &b) {
+    // character 2-gram Jaccard (works for Chinese too as characters)
+    auto make_grams = [](const std::string &s) {
+        std::unordered_set<std::string> grams;
+        if (s.size() == 0) return grams;
+        if (s.size() == 1) { grams.insert(s); return grams; }
+        for (size_t i = 0; i + 1 < s.size(); ++i) {
+            grams.insert(s.substr(i, 2));
+        }
+        return grams;
+    };
+    auto A = make_grams(a);
+    auto B = make_grams(b);
+    if (A.empty() && B.empty()) return 1.0f;
+    size_t inter = 0;
+    for (auto &g : A) if (B.count(g)) ++inter;
+    size_t uni = A.size() + B.size() - inter;
+    if (uni == 0) return 0.0f;
+    return static_cast<float>(inter) / static_cast<float>(uni);
+}
+
+inline float ComputeSemanticSim(const std::string& s1_orig, const std::string& s2_orig)
+{
+    std::string s1 = NormalizeTextForSim(s1_orig);
+    std::string s2 = NormalizeTextForSim(s2_orig);
+
+    // If either is empty after normalize
+    if (s1.empty() && s2.empty()) return 1.0f;
+    if (s1.empty() || s2.empty()) return 0.0f;
+
+    // Short-text special handling
+    if (s1.size() <= 2 || s2.size() <= 2) {
+        // exact or substring match => high sim
+        if (s1 == s2) return 1.0f;
+        if (s1.find(s2) != std::string::npos || s2.find(s1) != std::string::npos) return 0.9f;
+        // else use len-normalized edit but len small -> be permissive
+        TextMatcher tm(0,0,0);
+        int dist = tm.LevenshteinDistance(s1, s2);
+        int maxLen = std::max((int)s1.size(), (int)s2.size());
+        float levSim = 1.0f - static_cast<float>(dist) / static_cast<float>(maxLen);
+        if (levSim < 0.0f) levSim = 0.0f;
+        // boost a bit
+        return std::max(levSim, 0.4f);
+    }
+
+    // Normal-length text: combine normalized Levenshtein and 2-gram Jaccard
+    TextMatcher tm(0,0,0);
+    int dist = tm.LevenshteinDistance(s1, s2);
+    int maxLen = std::max((int)s1.size(), (int)s2.size());
+    float levSim = 1.0f - static_cast<float>(dist) / static_cast<float>(maxLen);
+    if (levSim < 0.0f) levSim = 0.0f;
+
+    float jacc = Jaccard2Gram(s1, s2); // 0..1
+
+    // combine: weighted average or max
+    // weights tuned to favor exact/partial matches but be robust to typos
+    float sim = std::max(levSim, jacc); // conservative: take whichever is larger
+    // optionally blend: sim = 0.6f*levSim + 0.4f*jacc;
+
+    return sim;
+}
+
 
 // --- 主函数：文本地标融合 ---
 void LocalMapping::FuseTextLandmarks()
