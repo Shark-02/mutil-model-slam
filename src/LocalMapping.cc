@@ -312,6 +312,11 @@ void LocalMapping::UpdateTextObservations(KeyFrame* pKF)
 
 void LocalMapping::TextStatusUpdate()
 {
+    if (!mpCurrentKeyFrame) {
+    // std::cout << "[LocalMapping] Skip TextStatusUpdate: no current keyframe (tracking lost)" << std::endl;
+        return;
+    }
+
     std::unique_lock<std::mutex> lock(mMutexRecentAddedMapTexts);
     if (mlpRecentAddedMapTexts.empty())
         return;
@@ -342,8 +347,11 @@ void LocalMapping::TextStatusUpdate()
         if (pMT->mState == TEXTIMMATURE)
         {
             // 如果该文字创建在未来关键帧，跳过
-            if (pMT->mnFirstKFid > nCurrentKFid)
-                continue;  
+            if (pMT->mnFirstKFid > nCurrentKFid){
+                ++lit;
+                continue;
+            }
+                       
             int nObs = pMT->Observations();
             long long nAge = (pMT->mnFirstKFid >= 0) ? (nCurrentKFid - pMT->mnFirstKFid) : -1;
             if (nAge < 0) {
