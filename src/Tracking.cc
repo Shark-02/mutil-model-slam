@@ -2353,6 +2353,43 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
                     << " mnFirstKFid=" << pNewMT->mnFirstKFid
                     << " semantic_score=" << init_info.score_semantic
                     << std::endl;
+            
+            Eigen::Vector4d plane = pNewMT->GetWorldPlane();
+            Eigen::Vector3d n = plane.head<3>();
+            double d = plane[3];
+            Eigen::Vector3d center = -d * n;
+
+            std::cout << std::fixed << std::setprecision(3);
+            std::cout << "[DebugText] MapText id=" << pNewMT->mnId
+                    << " text=\"" << pNewMT->GetText() << "\""
+                    << " KFid=" << pNewMT->mnFirstKFid
+                    << " n=(" << n.transpose() << ")"
+                    << " d=" << d
+                    << " center=(" << center.transpose() << ")"
+                    << " dist=" << center.norm()
+                    << " state=" << pNewMT->mState
+                    << std::endl;
+
+            // ---- 调试：打印生成时的bbox3D点坐标 ----
+            auto bbox3D = pNewMT->GetWorldBoundingBox();
+            if (!bbox3D.empty()) {
+                std::cout << "[DebugTextBBox] MapText id=" << pNewMT->mnId 
+                        << " bbox3D_points=" << bbox3D.size() << std::endl;
+                for (size_t k = 0; k < bbox3D.size(); ++k) {
+                    cv::Mat pt = bbox3D[k];
+                    if (pt.empty() || pt.rows < 3) continue;
+                    float x = pt.at<float>(0);
+                    float y = pt.at<float>(1);
+                    float z = pt.at<float>(2);
+                    std::cout << "  pt" << k << " = (" 
+                            << std::fixed << std::setprecision(3)
+                            << x << ", " << y << ", " << z << ")"
+                            << " dist=" << std::sqrt(x*x + y*y + z*z)
+                            << std::endl;
+                }
+            }
+
+
         }
     }
 }
