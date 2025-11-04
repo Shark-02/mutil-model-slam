@@ -460,7 +460,7 @@ void MapDrawer::DrawTextLandmarks()
         if (!pT || pT->isBad()) continue;
 
         auto bbox3D = pT->GetWorldBoundingBox();
-        if (bbox3D.size() < 8) continue;
+        if (bbox3D.size() < 4) continue;
 
         // -------- 1. 根据状态设置颜色 --------
         // 这里假设 TEXTGOOD=0, TEXTIMMATURE=1, TEXTBAD=2
@@ -479,41 +479,57 @@ void MapDrawer::DrawTextLandmarks()
         }
 
         // -------- 2. 绘制立方体边框 --------
-        glBegin(GL_LINE_LOOP); // 前面
-        for (int i = 0; i < 4; i++) {
-            cv::Mat pt = bbox3D[i];
-            glVertex3f(pt.at<float>(0), pt.at<float>(1), pt.at<float>(2));
+        if (bbox3D.size() == 4)
+        {
+            // 绘制平面矩形
+            glBegin(GL_LINE_LOOP);
+            for (int i = 0; i < 4; i++) {
+                cv::Mat pt = bbox3D[i];
+                glVertex3f(pt.at<float>(0), pt.at<float>(1), pt.at<float>(2));
+            }
+            glEnd();
         }
-        glEnd();
+        else if (bbox3D.size() == 8)
+        {
+            // 绘制立方体（保留旧逻辑）
+            glBegin(GL_LINE_LOOP);
+            for (int i = 0; i < 4; i++) {
+                cv::Mat pt = bbox3D[i];
+                glVertex3f(pt.at<float>(0), pt.at<float>(1), pt.at<float>(2));
+            }
+            glEnd();
 
-        glBegin(GL_LINE_LOOP); // 后面
-        for (int i = 4; i < 8; i++) {
-            cv::Mat pt = bbox3D[i];
-            glVertex3f(pt.at<float>(0), pt.at<float>(1), pt.at<float>(2));
+            glBegin(GL_LINE_LOOP);
+            for (int i = 4; i < 8; i++) {
+                cv::Mat pt = bbox3D[i];
+                glVertex3f(pt.at<float>(0), pt.at<float>(1), pt.at<float>(2));
+            }
+            glEnd();
+
+            glBegin(GL_LINES);
+            for (int i = 0; i < 4; i++) {
+                cv::Mat p1 = bbox3D[i];
+                cv::Mat p2 = bbox3D[i + 4];
+                glVertex3f(p1.at<float>(0), p1.at<float>(1), p1.at<float>(2));
+                glVertex3f(p2.at<float>(0), p2.at<float>(1), p2.at<float>(2));
+            }
+            glEnd();
         }
-        glEnd();
 
-        glBegin(GL_LINES); // 连接前后
-        for (int i = 0; i < 4; i++) {
-            cv::Mat p1 = bbox3D[i];
-            cv::Mat p2 = bbox3D[i + 4];
-            glVertex3f(p1.at<float>(0), p1.at<float>(1), p1.at<float>(2));
-            glVertex3f(p2.at<float>(0), p2.at<float>(1), p2.at<float>(2));
-        }
-        glEnd();
-
-        // ---- 2. 计算立方体中心点 ----
+        // ---- 2. 计算中心点 ----
         Eigen::Vector3d center(0, 0, 0);
-        for (int i = 0; i < 8; i++) {
+        int nPts = bbox3D.size();
+        for (int i = 0; i < nPts; i++) {
             cv::Mat pt = bbox3D[i];
             center += Eigen::Vector3d(pt.at<float>(0), pt.at<float>(1), pt.at<float>(2));
         }
-        center /= 8.0;
+        center /= static_cast<double>(nPts);
 
         // ---- 3. 在中心绘制文字 ----
         const std::string &text = pT->mTextInfo.mean;
         glColor3f(1.0f, 0.0f, 0.0f); // 红色文字
         text_font->Text(text).Draw(center.x(), center.y(), center.z());
+
     }
 }
 

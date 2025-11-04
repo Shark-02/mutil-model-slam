@@ -130,6 +130,60 @@ int TextMatcher::SearchTextByProjection(Frame &F, const std::vector<MapText*> &v
 bool TextMatcher::ProjectTextToImage(MapText* pMT, const cv::Mat& Tcw, const cv::Mat& K, 
                                      cv::Rect2f& out_bbox, const Frame& F)
 {
+    //优先使用 MapText 的持久化 world corners（3x1 CV_32F）
+    std::vector<cv::Mat> worldCorners = pMT->GetWorldCorners();
+    if (!worldCorners.empty())
+    {
+        float min_x = static_cast<float>(F.mnMaxX), max_x = static_cast<float>(F.mnMinX);
+        float min_y = static_cast<float>(F.mnMaxY), max_y = static_cast<float>(F.mnMinY);
+        bool bInFrustum = false;
+
+        cv::Mat R = Tcw.rowRange(0,3).colRange(0,3);
+        cv::Mat t = Tcw.rowRange(0,3).col(3);
+
+        for (const auto& p3D_world_raw : worldCorners)
+        {
+            if (p3D_world_raw.empty()) continue;
+            cv::Mat p3D_world = p3D_world_raw;
+            // defensive checks
+            if (p3D_world.rows < 3) continue;
+            float X = p3D_world.at<float>(0,0);
+            float Y = p3D_world.at<float>(1,0);
+            float Z = p3D_world.at<float>(2,0);
+            if (!std::isfinite(X) || !std::isfinite(Y) || !std::isfinite(Z)) continue;
+
+            // world -> camera
+            cv::Mat p3D_cam = R * p3D_world + t;
+            float z = p3D_cam.at<float>(2,0);
+            if (!std::isfinite(z) || z <= 0.02f) continue;
+
+            const float inv_z = 1.0f / z;
+            const float u = K.at<float>(0, 0) * p3D_cam.at<float>(0,0) * inv_z + K.at<float>(0, 2);
+            const float v = K.at<float>(1, 1) * p3D_cam.at<float>(1,0) * inv_z + K.at<float>(1, 2);
+
+            if (u >= F.mnMinX - 1 && u <= F.mnMaxX + 1 && v >= F.mnMinY - 1 && v <= F.mnMaxY + 1)
+            {
+                bInFrustum = true;
+                min_x = std::min(min_x, u); max_x = std::max(max_x, u);
+                min_y = std::min(min_y, v); max_y = std::max(max_y, v);
+            }
+        }
+        if (!bInFrustum) return false;
+        if (max_x < min_x) std::swap(max_x, min_x);
+        if (max_y < min_y) std::swap(max_y, min_y);
+
+        // clip to image bounds
+        min_x = std::max(min_x, static_cast<float>(F.mnMinX));
+        min_y = std::max(min_y, static_cast<float>(F.mnMinY));
+        max_x = std::min(max_x, static_cast<float>(F.mnMaxX));
+        max_y = std::min(max_y, static_cast<float>(F.mnMaxY));
+
+        if ((max_x - min_x) < 1.0f || (max_y - min_y) < 1.0f) return false;
+
+        out_bbox = cv::Rect2f(min_x, min_y, max_x - min_x, max_y - min_y);
+        return true;
+    }
+    //若没有持久化角点，退回到基于单应或射线-平面交的逻辑
     std::vector<cv::Mat> bbox3D_world = pMT->GetWorldBoundingBox();
     if (bbox3D_world.empty()) return false;
 

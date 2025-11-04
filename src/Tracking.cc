@@ -2194,35 +2194,28 @@ bool Tracking::FitPlaneRANSAC(const std::vector<cv::Mat>& vPoints3D_world, Eigen
  */
 void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
 {
-    // 基本检查
     if (!pKF || pKF->vTextDetections.empty())
         return;
 
-    //DELETE 测试输出
     std::cout << "[TextCreate] KF " << pKF->mnId 
-          << " detections=" << pKF->vTextDetections.size() 
-          << std::endl;
+              << " detections=" << pKF->vTextDetections.size() << std::endl;
 
-    // 遍历该关键帧中的所有文本检测
+    const int MIN_FEATURES_FOR_PLANE = 10;
+    const double MIN_T = 0.02;   // 2 cm
+    const double MAX_T = 50.0;   // 50 m
+
     for (size_t i = 0; i < pKF->vTextDetections.size(); ++i)
     {
-        // 如果这个检测框已经关联到了一个地标，则跳过
-        if (pKF->mvpMapTexts[i])
-        {
-            continue;
-        }
+        if (pKF->mvpMapTexts[i]) continue; // 已有关联
 
         const auto& det = pKF->vTextDetections[i];
         const auto& bbox = det->bbox;
 
-        // --- 准入筛选步骤 1: 确保检测框内有足够的有效特征点 ---
+        // 1) 特征点筛选（在 bbox 内）
         const std::vector<size_t> vFeatureIndices = pKF->GetFeaturesInBox(bbox[0], bbox[2], bbox[1], bbox[3]);
-        
-        // 提高对初始特征点数量的要求
-        const int MIN_FEATURES_FOR_PLANE = 10; // 从至少10个特征点开始拟合平面，比3个点鲁棒得多
         if (vFeatureIndices.size() < MIN_FEATURES_FOR_PLANE) continue;
 
-        // --- 准入筛选步骤 2: 收集深度信息并进行统计过滤 ---
+        // 2) 用特征点深度反投影得到世界 3D 点集合
         std::vector<cv::Mat> vPoints3D_world;
         std::vector<float> vDepths;
         vPoints3D_world.reserve(vFeatureIndices.size());
@@ -2231,168 +2224,174 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
         for (const size_t& feat_idx : vFeatureIndices)
         {
             const float d = pKF->mvDepth[feat_idx];
-            // 强化深度有效性检查，加入最大深度限制
-            if (d > 0.1 && d < 10.0) { // 只考虑10厘米到10米范围内的点
-                cv::Mat p3D_world = pKF->UnprojectStereo(feat_idx);
-                if(!p3D_world.empty())
+            if (d > 0.1f && d < 10.0f) // 深度范围过滤
+            {
+                cv::Mat pw = pKF->UnprojectStereo(static_cast<int>(feat_idx));
+                if (!pw.empty())
                 {
-                    vPoints3D_world.push_back(p3D_world);
+                    vPoints3D_world.push_back(pw);
                     vDepths.push_back(d);
                 }
             }
         }
-
         if (vPoints3D_world.size() < MIN_FEATURES_FOR_PLANE) continue;
 
-        // 检查深度值的一致性，剔除异常值（例如深度跳变巨大的情况）
-        cv::Scalar mean, stddev;
-        cv::meanStdDev(vDepths, mean, stddev);
-        if (stddev[0] > 0.5) // 如果深度标准差大于0.5米，说明这些点很可能不在一个平面上，放弃
-        {
-             continue;
-        }
+        // 3) 深度一致性检查
+        cv::Scalar mean, stdDepth;
+        cv::meanStdDev(vDepths, mean, stdDepth);
+        if (stdDepth[0] > 0.5) continue;
 
-        // --- 准入筛选步骤 3: RANSAC平面拟合与结果验证 ---
+        // 4) RANSAC 拟合平面（world coords）
         Eigen::Vector4d plane_world;
         std::vector<bool> vbInliers;
-        
-        // 强化RANSAC的成功标准
-        // 在FitPlaneRANSAC函数内部，建议将成功拟合的inlier阈值从3个点提高到至少5个或更多
-        if (FitPlaneRANSAC(vPoints3D_world, plane_world, vbInliers))
+        if (!FitPlaneRANSAC(vPoints3D_world, plane_world, vbInliers)) continue;
+
+        // 5) 将 plane 转到参考关键帧相机坐标系并做几何校验（只算一次）
+        cv::Mat Twc_ref = pKF->GetPoseInverse(); // world <- camera_ref
+        Eigen::Matrix4d T_world_cam; cv::cv2eigen(Twc_ref, T_world_cam);
+        Eigen::Matrix3d R_wc = T_world_cam.block<3,3>(0,0);
+        Eigen::Vector3d t_wc = T_world_cam.block<3,1>(0,3);
+
+        Eigen::Vector3d n_world(plane_world[0], plane_world[1], plane_world[2]);
+        double d_world = plane_world[3];
+
+        Eigen::Vector3d n_cam = R_wc.transpose() * n_world; // Rcw = R_wc^T
+        double d_cam = d_world + n_world.dot(t_wc); // plane in camera coords: n_cam^T x + d_cam = 0
+
+        // 检查法向（期望 z 分量朝向相机，z 应为负值）
+        if (n_cam.z() > -0.1) continue;
+
+        // 6) 检查 bbox 四角在平面上的射线交点是否在相机前方（并生成世界角点）
+        std::vector<cv::Point2f> bbox_corners_px = {
+            cv::Point2f((float)bbox[0], (float)bbox[1]), // left-top
+            cv::Point2f((float)bbox[2], (float)bbox[1]), // right-top
+            cv::Point2f((float)bbox[2], (float)bbox[3]), // right-bottom
+            cv::Point2f((float)bbox[0], (float)bbox[3])  // left-bottom
+        };
+
+        // 预备 Twc_ref -> Rwc, twc （用于把相机系点变到 world）
+        cv::Mat Rwc = Twc_ref.rowRange(0,3).colRange(0,3);
+        cv::Mat twc = Twc_ref.rowRange(0,3).col(3);
+
+        std::vector<cv::Mat> bbox3D_world; bbox3D_world.reserve(4);
+        int nValidCorners = 0;
+        for (const auto &c : bbox_corners_px)
         {
-            // 对拟合出的平面进行最终的几何合理性检查
-            // 将平面转换到当前关键帧的相机坐标系下
-            cv::Mat Twc_ref = pKF->GetPoseInverse();
-            Eigen::Matrix4d T_world_cam;
-            cv::cv2eigen(Twc_ref, T_world_cam);
-            Eigen::Vector3d n_world = plane_world.head<3>();
-            double d_world = plane_world[3];
+            double u_norm = (c.x - pKF->cx) / pKF->fx;
+            double v_norm = (c.y - pKF->cy) / pKF->fy;
+            Eigen::Vector3d ray_cam(u_norm, v_norm, 1.0);
+            double denom = n_cam.dot(ray_cam);
 
-            Eigen::Matrix3d R_wc = T_world_cam.block<3,3>(0,0);
-            Eigen::Vector3d t_wc = T_world_cam.block<3,1>(0,3);
+            if (std::fabs(denom) < 1e-6) { bbox3D_world.push_back(cv::Mat()); continue; }
 
-            Eigen::Vector3d n_cam = R_wc.transpose() * n_world;
-            double d_cam = d_world + n_world.dot(t_wc);
+            double t = - d_cam / denom;
+            if (!(t > MIN_T && t < MAX_T)) { bbox3D_world.push_back(cv::Mat()); continue; }
 
-            // a) 检查平面法向量是否大致朝向相机 (在相机坐标系下，法向量的z分量应为负)
-            if (n_cam.z() > -0.1) // 允许一些小的误差
-            {
-                continue;
-            }
-
-            // --------- DELETE 测试 ----------
-            int nInliers = 0;
-            for (bool b : vbInliers) if (b) ++nInliers;
-
-            // mean 和 stddev 在函数中已用 cv::meanStdDev(vDepths, mean, stddev) 计算过，直接使用
-            // 如果你的 mean 变量名不同，请改为你的变量名；通常是 cv::Scalar mean, stddev;
-            double meanDepth = 0.0, stdDepth = 0.0;
-            #ifdef __has_include
-            // 保持极简：如果 mean 已经存在，就使用；否则不打印 mean/stddev
-            #endif
-            // 尝试访问 mean/stddev（在你函数中它们确实存在）
-            try {
-                meanDepth = mean[0];
-                stdDepth = stddev[0];
-            } catch(...) {
-                // 如果没有 mean/stddev，保持为0
-            }
-
-            // -------------------------------------------------------------------
-
-
-            // b) 提前试算包围盒角点的3D坐标，检查是否有负深度
-            const auto& det_bbox_vec = det->bbox;
-            std::vector<cv::Point2f> corners_2d = {
-                {(float)det_bbox_vec[0], (float)det_bbox_vec[1]},
-                {(float)det_bbox_vec[2], (float)det_bbox_vec[3]}
-            };
-
-            bool hasNegativeDepth = false;
-            for(const auto& corner : corners_2d)
-            {
-                float u_norm = (corner.x - pKF->cx) / pKF->fx;
-                float v_norm = (corner.y - pKF->cy) / pKF->fy;
-                Eigen::Vector3d ray(u_norm, v_norm, 1.0);
-                
-                double n_dot_ray = n_cam.dot(ray);
-                if (std::fabs(n_dot_ray) < 1e-6) continue;
-                double t = -d_cam / n_dot_ray;
-                
-                if(t < 0) // 如果计算出的深度t为负，说明这个角点在相机后方
-                {
-                    hasNegativeDepth = true;
-                    break;
-                }
-            }
-            if(hasNegativeDepth)
-            {
-                continue; // 发现异常，不创建此地标
-            }
-
-            // --- 所有检查通过，正式创建地标 ---
-            TextInfo textInfo;
-            textInfo.mean = det->text;
-            textInfo.score = det->score;
-            MapText* pNewMT = new MapText(pKF, plane_world, textInfo, mpMap);
-            // --- [语义初始化] ---
-            float init_cost = CalculateSemanticCost(pNewMT, pKF, textInfo);
-            TextInfo init_info = textInfo;
-            init_info.score_semantic = init_cost;
-            pNewMT->UpdateSemanticInfo(init_info);
-            // ---------------------
-            mpMap->AddMapText(pNewMT);
-            pKF->mvpMapTexts[i] = pNewMT;
-            pNewMT->mnFirstKFid = pKF->mnId;
-            pNewMT->AddObservation(pKF, i);
-            if (mpLocalMapper) mpLocalMapper->AddRecentAddedMapText(pNewMT);
-            std::cout << "[TextCreate] KF=" << pKF->mnId 
-                    << " DetIdx=" << i 
-                    << " text=\"" << det->text << "\""
-                    << " ocr_score=" << det->score
-                    << " mnFirstKFid=" << pNewMT->mnFirstKFid
-                    << " semantic_score=" << init_info.score_semantic
-                    << std::endl;
-            
-            Eigen::Vector4d plane = pNewMT->GetWorldPlane();
-            Eigen::Vector3d n = plane.head<3>();
-            double d = plane[3];
-            Eigen::Vector3d center = -d * n;
-
-            std::cout << std::fixed << std::setprecision(3);
-            std::cout << "[DebugText] MapText id=" << pNewMT->mnId
-                    << " text=\"" << pNewMT->GetText() << "\""
-                    << " KFid=" << pNewMT->mnFirstKFid
-                    << " n=(" << n.transpose() << ")"
-                    << " d=" << d
-                    << " center=(" << center.transpose() << ")"
-                    << " dist=" << center.norm()
-                    << " state=" << pNewMT->mState
-                    << std::endl;
-
-            // ---- 调试：打印生成时的bbox3D点坐标 ----
-            auto bbox3D = pNewMT->GetWorldBoundingBox();
-            if (!bbox3D.empty()) {
-                std::cout << "[DebugTextBBox] MapText id=" << pNewMT->mnId 
-                        << " bbox3D_points=" << bbox3D.size() << std::endl;
-                for (size_t k = 0; k < bbox3D.size(); ++k) {
-                    cv::Mat pt = bbox3D[k];
-                    if (pt.empty() || pt.rows < 3) continue;
-                    float x = pt.at<float>(0);
-                    float y = pt.at<float>(1);
-                    float z = pt.at<float>(2);
-                    std::cout << "  pt" << k << " = (" 
-                            << std::fixed << std::setprecision(3)
-                            << x << ", " << y << ", " << z << ")"
-                            << " dist=" << std::sqrt(x*x + y*y + z*z)
-                            << std::endl;
-                }
-            }
-
-
+            // p_cam = ray_cam * t
+            cv::Mat p_cam = (cv::Mat_<float>(3,1) << (float)(ray_cam[0]*t), (float)(ray_cam[1]*t), (float)(ray_cam[2]*t));
+            cv::Mat pw = Rwc * p_cam + twc;
+            bbox3D_world.push_back(pw.clone());
+            ++nValidCorners;
         }
-    }
-}
+
+        // 7) 若有效角点不足 3 个，用 inliers 的质心在平面上构造近似四角
+        if (nValidCorners < 3)
+        {
+            Eigen::Vector3d centroid_world(0,0,0);
+            int cnt = 0;
+            for (size_t k = 0; k < vPoints3D_world.size(); ++k)
+            {
+                if (k < vbInliers.size() && vbInliers[k])
+                {
+                    cv::Mat pw = vPoints3D_world[k];
+                    centroid_world += Eigen::Vector3d(pw.at<float>(0,0), pw.at<float>(1,0), pw.at<float>(2,0));
+                    ++cnt;
+                }
+            }
+            if (cnt == 0) continue; // 极端情况放弃
+            centroid_world /= double(cnt);
+
+            Eigen::Vector3d n_w = n_world.normalized();
+            Eigen::Vector3d arb = (fabs(n_w.z()) < 0.9) ? Eigen::Vector3d(0,0,1) : Eigen::Vector3d(0,1,0);
+            Eigen::Vector3d t1 = n_w.cross(arb); t1.normalize();
+            Eigen::Vector3d t2 = n_w.cross(t1); t2.normalize();
+            double meanDepth = (mean[0] > 0) ? mean[0] : 1.0;  // 兜底值
+            double box_scale = std::clamp(meanDepth / 5.0, 0.1, 1.0); // 根据平均深度调整
+            std::vector<Eigen::Vector3d> approx = {
+                centroid_world + box_scale * ( t1 + t2 ),
+                centroid_world + box_scale * ( t1 - t2 ),
+                centroid_world + box_scale * ( -t1 - t2 ),
+                centroid_world + box_scale * ( -t1 + t2 )
+            };
+            bbox3D_world.clear();
+            for (auto &pp : approx) {
+                cv::Mat mpt = (cv::Mat_<float>(3,1) << (float)pp.x(), (float)pp.y(), (float)pp.z());
+                bbox3D_world.push_back(mpt);
+            }
+        }
+
+        // 8) 构造 MapText — 传入参考 KF 相机系下的平面参数更合理（将 world plane 转 camera_ref plane）
+        // 计算 plane_ref：把 plane_world (n_world,d_world) 转为参考相机坐标系下 (n_ref, d_ref)
+        //Eigen::Vector3d n_ref = R_wc.transpose() * n_world;  // Rcw = R_wc^T
+        //double d_ref = d_world + n_world.dot(t_wc);
+
+        Eigen::Vector4d plane_ref;
+        plane_ref << n_cam.x(), n_cam.y(), n_cam.z(), d_cam;
+
+        TextInfo textInfo;
+        textInfo.mean = det->text;
+        textInfo.score = det->score;
+
+        // 推荐：构造时把 plane_ref（参考相机系）传入，这样 MapText 内部的 mThetaRef 是一致的
+        MapText* pNewMT = new MapText(pKF, plane_ref, textInfo, mpMap);
+
+        // 写入世界角点，保证后续 GetWorldBoundingBox 优先返回持久化角点
+        pNewMT->SetWorldCorners(bbox3D_world);
+
+        // 为保险起见，再用这些世界角点重拟合一次平面并覆盖 mThetaRef（保证一致）
+        pNewMT->RefitPlaneFromWorldCorners(pKF);
+
+        // 语义初始化（保持你的原逻辑）
+        float init_cost = CalculateSemanticCost(pNewMT, pKF, textInfo);
+        TextInfo init_info = textInfo;
+        init_info.score_semantic = init_cost;
+        pNewMT->UpdateSemanticInfo(init_info);
+
+        // 加入地图并建立观测
+        mpMap->AddMapText(pNewMT);
+        pKF->mvpMapTexts[i] = pNewMT;
+        pNewMT->mnFirstKFid = pKF->mnId;
+        pNewMT->AddObservation(pKF, i);
+        if (mpLocalMapper) mpLocalMapper->AddRecentAddedMapText(pNewMT);
+
+        // Debug 输出（保留）
+        std::cout << "[TextCreate] KF=" << pKF->mnId 
+                  << " DetIdx=" << i 
+                  << " text=\"" << det->text << "\""
+                  << " ocr_score=" << det->score
+                  << " mnFirstKFid=" << pNewMT->mnFirstKFid
+                  << " semantic_score=" << init_info.score_semantic
+                  << std::endl;
+
+        // 打印 bbox 点，便于检查
+        auto bbox3D_check = pNewMT->GetWorldBoundingBox();
+        if (!bbox3D_check.empty()) {
+            std::cout << "[DebugTextBBox] MapText id=" << pNewMT->mnId 
+                      << " bbox3D_points=" << bbox3D_check.size() << std::endl;
+            for (size_t k = 0; k < bbox3D_check.size(); ++k) {
+                cv::Mat pt = bbox3D_check[k];
+                if (pt.empty() || pt.rows < 3) continue;
+                float x = pt.at<float>(0);
+                float y = pt.at<float>(1);
+                float z = pt.at<float>(2);
+                std::cout << "  pt" << k << " = (" << std::fixed << std::setprecision(3)
+                          << x << ", " << y << ", " << z << ") dist=" 
+                          << std::sqrt(x*x + y*y + z*z) << std::endl;
+            }
+        }
+  } // end for det
+} // end func
+
 
 // void Tracking::UpdateTextStatus(vector<MapText*> &vTexts)
 // {

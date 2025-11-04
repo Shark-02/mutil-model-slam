@@ -1,5 +1,5 @@
 #include "MapText.h"
-
+#include <opencv2/core/eigen.hpp>
 #include <mutex>
 
 
@@ -23,7 +23,7 @@ Eigen::Vector4d MapText::GetWorldPlane()
     std::unique_lock<std::mutex> lock(mMutexPose);
 
     // 获取参考关键帧的位姿 T_wc (world from camera)
-    cv::Mat Twc_ref = mpRefKF->GetPose();
+    cv::Mat Twc_ref = mpRefKF->GetPoseInverse();
     
     // 提取旋转 R_wc 和平移 t_wc (即相机光心 O_w)
     cv::Mat Rwc_ref_cv = Twc_ref.rowRange(0, 3).colRange(0, 3);
@@ -207,6 +207,10 @@ MapText* MapText::GetReplaced()
 std::vector<cv::Mat> MapText::GetWorldBoundingBox()
 {
     std::unique_lock<std::mutex> lock(mMutexFeatures);
+    if (!mWorldCorners.empty()) {
+        return mWorldCorners;
+    }
+
     std::vector<cv::Mat> bbox3D_world;
 
     // --- 1. 从参考关键帧获取原始的2D检测框 ---
@@ -329,6 +333,105 @@ std::vector<cv::Point2f> MapText::ProjectByHomography(const Frame& F)
     cv::perspectiveTransform(corners_ref, proj_corners, H);
     return proj_corners;
 }
+
+
+bool MapText::HasWorldCorners() const {
+    std::unique_lock<std::mutex> lock(mMutexFeatures);
+    return !mWorldCorners.empty();
+}
+
+void MapText::SetWorldCorners(const std::vector<cv::Mat>& corners_world)
+{
+    std::unique_lock<std::mutex> lock(mMutexFeatures);
+    mWorldCorners.clear();
+    for (const auto &c : corners_world) {
+        if (c.empty()) continue;
+        // accept 3x1 float or 4x1 homogeneous
+        if (c.rows == 3 && c.cols == 1 && c.type() == CV_32F) {
+            mWorldCorners.push_back(c.clone());
+        } else if (c.rows == 4 && c.cols == 1 && c.type() == CV_32F) {
+            float w = c.at<float>(3,0);
+            if (fabs(w) < 1e-6f) continue;
+            cv::Mat nc = (cv::Mat_<float>(3,1) << c.at<float>(0,0)/w, c.at<float>(1,0)/w, c.at<float>(2,0)/w);
+            mWorldCorners.push_back(nc);
+        }
+    }
+}
+
+std::vector<cv::Mat> MapText::GetWorldCorners() const {
+    std::unique_lock<std::mutex> lock(mMutexFeatures);
+    return mWorldCorners; // copy
+}
+
+void MapText::ClearWorldCorners()
+{
+    std::unique_lock<std::mutex> lock(mMutexFeatures);
+    mWorldCorners.clear();
+}
+
+void MapText::RefitPlaneFromWorldCorners(KeyFrame* pRefKF)
+{
+    std::vector<cv::Mat> corners_world;
+    {
+        std::unique_lock<std::mutex> lock(mMutexFeatures);
+        if (mWorldCorners.empty()) return;
+        corners_world = mWorldCorners; // copy
+    }
+
+    if (!pRefKF) return;
+
+    // Get Twc_ref (world <- camera_ref)
+    cv::Mat Twc_ref = pRefKF->GetPoseInverse(); // 4x4
+    // Convert Twc_ref to Eigen for computations
+    Eigen::Matrix4d T_world_cam;
+    cv::cv2eigen(Twc_ref, T_world_cam);
+    Eigen::Matrix3d R_wc = T_world_cam.block<3,3>(0,0);
+    Eigen::Vector3d t_wc = T_world_cam.block<3,1>(0,3);
+
+    // Transform world corners to reference camera coords
+    std::vector<Eigen::Vector3d> pts_cam;
+    for (const auto &pw_mat : corners_world) {
+        if (pw_mat.empty() || pw_mat.rows < 3) continue;
+        Eigen::Vector3d pw(pw_mat.at<float>(0,0), pw_mat.at<float>(1,0), pw_mat.at<float>(2,0));
+        // p_cam = Rcw*(pw - Ow) ; Rcw = R_wc.transpose()
+        Eigen::Vector3d p_cam = R_wc.transpose() * (pw - t_wc);
+        pts_cam.push_back(p_cam);
+    }
+    if (pts_cam.size() < 3) return;
+
+    // Fit plane via PCA/SVD (smallest eigenvector is normal)
+    Eigen::MatrixXd A(pts_cam.size(), 3);
+    for (size_t i = 0; i < pts_cam.size(); ++i) {
+        A(i,0) = pts_cam[i].x();
+        A(i,1) = pts_cam[i].y();
+        A(i,2) = pts_cam[i].z();
+    }
+    Eigen::Vector3d centroid = A.colwise().mean();
+    Eigen::MatrixXd centered = A.rowwise() - centroid.transpose();
+    Eigen::Matrix3d cov = (centered.transpose() * centered) / double(pts_cam.size());
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es(cov);
+    Eigen::Vector3d normal = es.eigenvectors().col(0);
+    if (normal.norm() < 1e-6) return;
+    normal.normalize();
+    double d = -normal.dot(centroid);
+
+    // Ensure normal points toward camera (camera center in ref cam = 0)
+    if (normal.dot(Eigen::Vector3d(0,0,0) - centroid) < 0) {
+        normal = -normal;
+        d = -d;
+    }
+
+    // Write back into mThetaRef (in reference camera coords) — mThetaRef is Eigen::Vector4d or similar
+    {
+        std::unique_lock<std::mutex> lock(mMutexFeatures);
+        // If your mThetaRef is declared differently, adapt assignment accordingly
+        mThetaRef[0] = normal.x();
+        mThetaRef[1] = normal.y();
+        mThetaRef[2] = normal.z();
+        mThetaRef[3] = d;
+    }
+}
+
 
 
 

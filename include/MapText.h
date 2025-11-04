@@ -102,6 +102,16 @@ public:
     TextInfo mTextInfo;
 
     long long mnFirstKFid;  // 记录创建时的关键帧ID
+    // world corners（每个元素为 3x1 CV_32F 列向量）
+    void SetWorldCorners(const std::vector<cv::Mat>& corners_world);
+    std::vector<cv::Mat> GetWorldCorners() const;
+    bool HasWorldCorners() const;
+
+    // 新增：将 world-corners 转换到指定参考 KeyFrame 相机系并拟合 mThetaRef
+    void RefitPlaneFromWorldCorners(KeyFrame* pRefKF);
+
+    // 如果需要：清除持久化角点
+    void ClearWorldCorners();
 
 protected:
     // --- 内部数据与锁 ---
@@ -128,6 +138,7 @@ protected:
     // 线程锁
     mutable std::mutex mMutexFeatures;
     std::mutex mMutexPose;
+    std::vector<cv::Mat> mWorldCorners; // each cv::Mat is 3x1 CV_32F
 };
 
 
