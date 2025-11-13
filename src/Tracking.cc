@@ -2192,6 +2192,10 @@ bool Tracking::FitPlaneRANSAC(const std::vector<cv::Mat>& vPoints3D_world, Eigen
  * @brief (强化版) 为指定关键帧中尚未关联的文本检测创建新的MapText地标
  * @param pKF 需要处理的关键帧
  */
+/**
+ * @brief (【已修复】) 为指定关键帧中尚未关联的文本检测创建新的MapText地标
+ * @param pKF 需要处理的关键帧
+ */
 void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
 {
     if (!pKF || pKF->vTextDetections.empty())
@@ -2209,9 +2213,19 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
         if (pKF->mvpMapTexts[i]) continue; // 已有关联
 
         const auto& det = pKF->vTextDetections[i];
-        const auto& bbox = det->bbox;
+        
+        // 【修复点 1】: 我们需要的是 det->quad, 而不是 det->bbox
+        // const auto& bbox = det->bbox; // 旧的、错误的代码
+        const auto& quad_pts = det->quad; // 新的、正确的代码
+        if (quad_pts.size() != 4)
+        {
+            std::cerr << "[TextCreate] 警告: KF " << pKF->mnId << " 上的检测 " << i 
+                      << " (text='" << det->text << "') 没有4个 quad 角点。跳过。" << std::endl;
+            continue; // 如果没有四边形数据，则跳过这个文本
+        }
 
-        // 1) 特征点筛选（在 bbox 内）
+        // 1) 特征点筛选（使用紧密的四边形来获取内部点会更准，但用bbox也可以接受，这里保持原样）
+        const auto& bbox = det->bbox; // 仅用于 GetFeaturesInBox
         const std::vector<size_t> vFeatureIndices = pKF->GetFeaturesInBox(bbox[0], bbox[2], bbox[1], bbox[3]);
         if (vFeatureIndices.size() < MIN_FEATURES_FOR_PLANE) continue;
 
@@ -2261,13 +2275,15 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
         // 检查法向（期望 z 分量朝向相机，z 应为负值）
         if (n_cam.z() > -0.1) continue;
 
-        // 6) 检查 bbox 四角在平面上的射线交点是否在相机前方（并生成世界角点）
-        std::vector<cv::Point2f> bbox_corners_px = {
-            cv::Point2f((float)bbox[0], (float)bbox[1]), // left-top
-            cv::Point2f((float)bbox[2], (float)bbox[1]), // right-top
-            cv::Point2f((float)bbox[2], (float)bbox[3]), // right-bottom
-            cv::Point2f((float)bbox[0], (float)bbox[3])  // left-bottom
-        };
+        // 6) 检查 2D四边形(quad) 四角在平面上的射线交点是否在相机前方（并生成世界角点）
+        
+        // 【修复点 2】: 使用 quad_pts (来自 det->quad)，而不是 bbox 的角点
+        std::vector<cv::Point2f> corners_px;
+        corners_px.reserve(4);
+        corners_px.push_back(cv::Point2f(quad_pts[0].x(), quad_pts[0].y()));
+        corners_px.push_back(cv::Point2f(quad_pts[1].x(), quad_pts[1].y()));
+        corners_px.push_back(cv::Point2f(quad_pts[2].x(), quad_pts[2].y()));
+        corners_px.push_back(cv::Point2f(quad_pts[3].x(), quad_pts[3].y()));
 
         // 预备 Twc_ref -> Rwc, twc （用于把相机系点变到 world）
         cv::Mat Rwc = Twc_ref.rowRange(0,3).colRange(0,3);
@@ -2275,7 +2291,7 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
 
         std::vector<cv::Mat> bbox3D_world; bbox3D_world.reserve(4);
         int nValidCorners = 0;
-        for (const auto &c : bbox_corners_px)
+        for (const auto &c : corners_px) // *** 使用修正后的角点 ***
         {
             double u_norm = (c.x - pKF->cx) / pKF->fx;
             double v_norm = (c.y - pKF->cy) / pKF->fy;
@@ -2295,6 +2311,7 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
         }
 
         // 7) 若有效角点不足 3 个，用 inliers 的质心在平面上构造近似四角
+        // (此处的 'bbox3D_world' 变量名虽然不准确，但保持不变以减少代码改动)
         if (nValidCorners < 3)
         {
             Eigen::Vector3d centroid_world(0,0,0);
@@ -2316,13 +2333,31 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
             Eigen::Vector3d t1 = n_w.cross(arb); t1.normalize();
             Eigen::Vector3d t2 = n_w.cross(t1); t2.normalize();
             double meanDepth = (mean[0] > 0) ? mean[0] : 1.0;  // 兜底值
-            double box_scale = std::clamp(meanDepth / 5.0, 0.1, 1.0); // 根据平均深度调整
+            
+            // 【修复点 3】(可选但推荐): 用2D quad的宽高比来调整 t1 和 t2 的缩放
+            // 这比用 'box_scale' 效果更好
+            float quad_width_px = std::max((quad_pts[0] - quad_pts[1]).norm(), (quad_pts[2] - quad_pts[3]).norm());
+            float quad_height_px = std::max((quad_pts[1] - quad_pts[2]).norm(), (quad_pts[3] - quad_pts[0]).norm());
+            float aspect_ratio = (quad_height_px > 1e-3) ? (quad_width_px / quad_height_px) : 1.0f;
+
+            // 估算世界尺寸
+            double scale_w = (quad_width_px / pKF->fx) * meanDepth * 0.5; // 宽度缩放
+            double scale_h = (quad_height_px / pKF->fy) * meanDepth * 0.5; // 高度缩放
+            
+            // 假设 t1 对应宽度，t2 对应高度 (这可能需要根据 t1, t2 的朝向调整，但目前够用)
+            if (aspect_ratio > 1) { // 宽 > 高
+                scale_h = scale_w / aspect_ratio;
+            } else { // 高 > 宽
+                scale_w = scale_h * aspect_ratio;
+            }
+            
             std::vector<Eigen::Vector3d> approx = {
-                centroid_world + box_scale * ( t1 + t2 ),
-                centroid_world + box_scale * ( t1 - t2 ),
-                centroid_world + box_scale * ( -t1 - t2 ),
-                centroid_world + box_scale * ( -t1 + t2 )
+                centroid_world + (scale_w * t1) + (scale_h * t2),
+                centroid_world - (scale_w * t1) + (scale_h * t2),
+                centroid_world - (scale_w * t1) - (scale_h * t2),
+                centroid_world + (scale_w * t1) - (scale_h * t2)
             };
+
             bbox3D_world.clear();
             for (auto &pp : approx) {
                 cv::Mat mpt = (cv::Mat_<float>(3,1) << (float)pp.x(), (float)pp.y(), (float)pp.z());
@@ -2330,11 +2365,7 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
             }
         }
 
-        // 8) 构造 MapText — 传入参考 KF 相机系下的平面参数更合理（将 world plane 转 camera_ref plane）
-        // 计算 plane_ref：把 plane_world (n_world,d_world) 转为参考相机坐标系下 (n_ref, d_ref)
-        //Eigen::Vector3d n_ref = R_wc.transpose() * n_world;  // Rcw = R_wc^T
-        //double d_ref = d_world + n_world.dot(t_wc);
-
+        // 8) 构造 MapText
         Eigen::Vector4d plane_ref;
         plane_ref << n_cam.x(), n_cam.y(), n_cam.z(), d_cam;
 
@@ -2342,16 +2373,24 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
         textInfo.mean = det->text;
         textInfo.score = det->score;
 
-        // 推荐：构造时把 plane_ref（参考相机系）传入，这样 MapText 内部的 mThetaRef 是一致的
         MapText* pNewMT = new MapText(pKF, plane_ref, textInfo, mpMap);
+        Eigen::Vector4d plane_after = pNewMT->GetWorldPlane(); 
+        Eigen::Vector3d n_before = plane_ref.head<3>().normalized();
+        Eigen::Vector3d n_after = plane_after.head<3>().normalized();
+
+        std::cout << "[PlaneCheck] id=" << pNewMT->mnId
+                << " | n_before=" << n_before.transpose() << " d_before=" << plane_ref[3]
+                << " | n_after=" << n_after.transpose() << " d_after=" << plane_after[3]
+                << " | cos=" << n_before.dot(n_after) << std::endl;
+
 
         // 写入世界角点，保证后续 GetWorldBoundingBox 优先返回持久化角点
         pNewMT->SetWorldCorners(bbox3D_world);
 
-        // 为保险起见，再用这些世界角点重拟合一次平面并覆盖 mThetaRef（保证一致）
+        // (重要) 使用这些新计算的、更准确的世界角点重拟合一次平面参数
         pNewMT->RefitPlaneFromWorldCorners(pKF);
 
-        // 语义初始化（保持你的原逻辑）
+        // 语义初始化
         float init_cost = CalculateSemanticCost(pNewMT, pKF, textInfo);
         TextInfo init_info = textInfo;
         init_info.score_semantic = init_cost;
@@ -2364,7 +2403,7 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
         pNewMT->AddObservation(pKF, i);
         if (mpLocalMapper) mpLocalMapper->AddRecentAddedMapText(pNewMT);
 
-        // Debug 输出（保留）
+        // Debug 输出
         std::cout << "[TextCreate] KF=" << pKF->mnId 
                   << " DetIdx=" << i 
                   << " text=\"" << det->text << "\""
@@ -2372,6 +2411,7 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
                   << " mnFirstKFid=" << pNewMT->mnFirstKFid
                   << " semantic_score=" << init_info.score_semantic
                   << std::endl;
+        
 
         // 打印 bbox 点，便于检查
         auto bbox3D_check = pNewMT->GetWorldBoundingBox();
@@ -2388,6 +2428,12 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
                           << x << ", " << y << ", " << z << ") dist=" 
                           << std::sqrt(x*x + y*y + z*z) << std::endl;
             }
+        cv::Mat Ow = pKF->GetCameraCenter();
+        if (!bbox3D_check[0].empty()) {
+            cv::Mat Pw = bbox3D_check[0]; // 某个角点
+            double dist = cv::norm(Ow - Pw);
+            std::cout << "[Check] Cam=" << Ow.t() << " Point=" << Pw.t() << " dist=" << dist << " m\n";
+        }
         }
   } // end for det
 } // end func

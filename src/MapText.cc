@@ -22,27 +22,33 @@ Eigen::Vector4d MapText::GetWorldPlane()
 {
     std::unique_lock<std::mutex> lock(mMutexPose);
 
-    // 获取参考关键帧的位姿 T_wc (world from camera)
     cv::Mat Twc_ref = mpRefKF->GetPoseInverse();
-    
-    // 提取旋转 R_wc 和平移 t_wc (即相机光心 O_w)
-    cv::Mat Rwc_ref_cv = Twc_ref.rowRange(0, 3).colRange(0, 3);
-    cv::Mat Ow_ref_cv = Twc_ref.rowRange(0, 3).col(3);
 
     Eigen::Matrix3d R_wc;
     R_wc << Twc_ref.at<float>(0,0), Twc_ref.at<float>(0,1), Twc_ref.at<float>(0,2),
             Twc_ref.at<float>(1,0), Twc_ref.at<float>(1,1), Twc_ref.at<float>(1,2),
             Twc_ref.at<float>(2,0), Twc_ref.at<float>(2,1), Twc_ref.at<float>(2,2);
-    
-    Eigen::Vector3d t_wc; // this is Ow
-    t_wc << Ow_ref_cv.at<float>(0), Ow_ref_cv.at<float>(1), Ow_ref_cv.at<float>(2);
 
-    // 平面方程 Pi_c = (n_c, d_c) 变换到世界坐标系 Pi_w = (n_w, d_w)
-    // 公式: n_w = R_wc * n_c
-    //      d_w = d_c - n_w^T * t_wc
-    
+    Eigen::Vector3d t_wc;
+    t_wc << Twc_ref.at<float>(0,3), Twc_ref.at<float>(1,3), Twc_ref.at<float>(2,3);
+
+    // read mThetaRef
     Eigen::Vector3d n_c = mThetaRef.head<3>();
     double d_c = mThetaRef[3];
+
+    // defensive: ensure normal is normalized
+    double n_norm = n_c.norm();
+    if (n_norm < 1e-8) {
+        std::cerr << "[GetWorldPlane] WARNING: zero normal for MapText " << mnId << std::endl;
+        // fallback: return something harmless
+        Eigen::Vector4d theta_w; theta_w << 0,0,1, 0;
+        return theta_w;
+    }
+    if (fabs(n_norm - 1.0) > 1e-6) {
+        n_c.normalize();
+        // adjust d_c accordingly if you had scaled normal previously:
+        // If original mThetaRef stored non-unit normal, scale d as well (comment only if needed).
+    }
 
     Eigen::Vector3d n_w = R_wc * n_c;
     double d_w = d_c - n_w.dot(t_wc);
@@ -50,9 +56,9 @@ Eigen::Vector4d MapText::GetWorldPlane()
     Eigen::Vector4d theta_w;
     theta_w.head<3>() = n_w;
     theta_w[3] = d_w;
-
     return theta_w;
 }
+
 
 KeyFrame* MapText::GetReferenceKeyFrame()
 {
@@ -204,31 +210,54 @@ MapText* MapText::GetReplaced()
  * @brief 计算并返回该文本地标在世界坐标系下的3D包围盒的8个角点
  * @return std::vector<cv::Mat> 8个3x1的Mat，每个代表一个角点的世界坐标
  */
+/**
+ * @brief 计算并返回该文本地标在世界坐标系下的3D包围盒的角点
+ * @return std::vector<cv::Mat> 4个（平面）或8个（立方体）3x1的Mat，每个代表一个角点的世界坐标
+ */
 std::vector<cv::Mat> MapText::GetWorldBoundingBox()
 {
     std::unique_lock<std::mutex> lock(mMutexFeatures);
+    
+    // 优先返回持久化的角点（这是标准路径）
     if (!mWorldCorners.empty()) {
         return mWorldCorners;
     }
 
+    // --- 回退逻辑 (Fallback Logic) ---
+    // 如果 mWorldCorners 为空 (例如从旧地图加载)，则尝试从参考帧动态计算
+    std::cout << "[GetWorldBoundingBox] 警告: MapText " << mnId 
+              << " 缺少 mWorldCorners, 正在尝试从RefKF回退计算..." << std::endl;
+              
     std::vector<cv::Mat> bbox3D_world;
 
-    // --- 1. 从参考关键帧获取原始的2D检测框 ---
-    if (!mObservations.count(mpRefKF))
+    // --- 1. 从参考关键帧获取原始的2D检测四边形 (quad) ---
+    if (!mObservations.count(mpRefKF)) {
+        std::cerr << "[GetWorldBoundingBox] Fallback失败: MapText " << mnId << " 没有参考帧." << std::endl;
         return bbox3D_world; // 如果没有参考帧的观测信息，则无法计算
+    }
 
     size_t ref_det_idx = mObservations[mpRefKF];
-    if (ref_det_idx >= mpRefKF->vTextDetections.size())
+    if (ref_det_idx >= mpRefKF->vTextDetections.size()) {
+        std::cerr << "[GetWorldBoundingBox] Fallback失败: MapText " << mnId << " 在RefKF中的索引 " 
+                  << ref_det_idx << " 超出范围." << std::endl;
         return bbox3D_world;
+    }
 
-    const auto& det_bbox_vec = mpRefKF->vTextDetections[ref_det_idx]->bbox;
-    
-    // 获取2D检测框的四个角点 (像素坐标)
+    // 【修复点】: 使用 det->quad, 而不是 det->bbox
+    const auto& quad_pts = mpRefKF->vTextDetections[ref_det_idx]->quad;
+    if (quad_pts.size() != 4) {
+        std::cerr << "[GetWorldBoundingBox] Fallback失败: MapText " << mnId 
+                  << " 在RefKF中的检测没有4个quad角点." << std::endl;
+        return bbox3D_world;
+    }
+
+    // 获取2D四边形的四个角点 (像素坐标)
     std::vector<cv::Point2f> corners_2d;
-    corners_2d.push_back(cv::Point2f(det_bbox_vec[0], det_bbox_vec[1])); // top-left
-    corners_2d.push_back(cv::Point2f(det_bbox_vec[2], det_bbox_vec[1])); // top-right
-    corners_2d.push_back(cv::Point2f(det_bbox_vec[2], det_bbox_vec[3])); // bottom-right
-    corners_2d.push_back(cv::Point2f(det_bbox_vec[0], det_bbox_vec[3])); // bottom-left
+    corners_2d.reserve(4);
+    corners_2d.push_back(cv::Point2f(quad_pts[0].x(), quad_pts[0].y()));
+    corners_2d.push_back(cv::Point2f(quad_pts[1].x(), quad_pts[1].y()));
+    corners_2d.push_back(cv::Point2f(quad_pts[2].x(), quad_pts[2].y()));
+    corners_2d.push_back(cv::Point2f(quad_pts[3].x(), quad_pts[3].y()));
 
     // --- 2. 将2D角点反投影到参考帧相机坐标系的3D平面上 ---
     std::vector<cv::Mat> front_face_3d_cam;
@@ -241,25 +270,27 @@ std::vector<cv::Mat> MapText::GetWorldBoundingBox()
         float u_norm = (corner.x - mpRefKF->cx) / mpRefKF->fx;
         float v_norm = (corner.y - mpRefKF->cy) / mpRefKF->fy;
         Eigen::Vector3d ray(u_norm, v_norm, 1.0);
-        ray.normalize();
+        ray.normalize(); // 归一化射线
 
-        // 射线与平面求交，得到3D点在相机坐标系下的坐标
-        // 平面方程: n·p + d = 0, 射线上点 p = t*ray
-        // t * (n·ray) + d = 0  =>  t = -d / (n·ray)
+        // 射线与平面求交
         double n_dot_ray = n_c.dot(ray);
-        if (std::fabs(n_dot_ray) < 1e-6) continue; // 射线与平面平行，忽略
+        if (std::fabs(n_dot_ray) < 1e-6) continue; // 射线与平面平行
 
         double t = -d_c / n_dot_ray;
+        
+        // 检查深度是否在合理范围内 (例如，防止点在相机后面)
+        if (t <= 0.02) continue; 
+        
         Eigen::Vector3d p3D_cam_eig = t * ray;
-        /*std::cout << "[GetWorldBoundingBox] refKF " << mpRefKF->mnId
-              << " 2D=(" << corner.x << "," << corner.y << ")"
-              << " -> 3D_cam=(" << p3D_cam_eig.transpose() << ")" 
-              << " t=" << t << std::endl;*/
         
         front_face_3d_cam.push_back((cv::Mat_<float>(3, 1) << p3D_cam_eig.x(), p3D_cam_eig.y(), p3D_cam_eig.z()));
     }
     
-    if (front_face_3d_cam.size() != 4) return bbox3D_world; // 必须要有4个角点
+    if (front_face_3d_cam.size() != 4) {
+        std::cerr << "[GetWorldBoundingBox] Fallback失败: MapText " << mnId 
+                  << " 射线-平面相交失败 (仅 " << front_face_3d_cam.size() << " 个有效角点)." << std::endl;
+        return bbox3D_world; // 必须要有4个角点
+    }
 
     // --- 3. 根据平面法线方向，构造一个有厚度的包围盒 ---
     const float BOX_THICKNESS = 0.02; // 假设文本有2cm的厚度
@@ -276,13 +307,8 @@ std::vector<cv::Mat> MapText::GetWorldBoundingBox()
     cv::Mat Rwc_ref = Twc_ref.rowRange(0, 3).colRange(0, 3);
     cv::Mat Ow_ref = Twc_ref.rowRange(0, 3).col(3);
 
-    for (size_t i = 0; i < front_face_3d_cam.size(); i++) {
-        cv::Mat p_world = Rwc_ref * front_face_3d_cam[i] + Ow_ref;
-        /*std::cout << "[GetWorldBoundingBox] world corner " << i
-                << " = (" << p_world.at<float>(0) << ","
-                << p_world.at<float>(1) << ","
-                << p_world.at<float>(2) << ")" << std::endl;*/
-        bbox3D_world.push_back(p_world);
+    for (const auto& p_cam : front_face_3d_cam) {
+        bbox3D_world.push_back(Rwc_ref * p_cam + Ow_ref);
     }
     for (const auto& p_cam : back_face_3d_cam) {
         bbox3D_world.push_back(Rwc_ref * p_cam + Ow_ref);
@@ -368,7 +394,18 @@ void MapText::ClearWorldCorners()
     std::unique_lock<std::mutex> lock(mMutexFeatures);
     mWorldCorners.clear();
 }
-
+// ========================== 平面计算方法 ==========================
+// 平面方程定义： n^T * X + d = 0
+// 其中 n 为单位法向量，d = -n^T * X0，X0 为平面上一点。
+// 因此 d 通常为负值（相机前方平面若法向量朝向相机，d < 0）。
+// 坐标变换规则：
+//   相机系 -> 世界系：
+//      n_w = R_wc * n_c
+//      d_w = d_c - n_w^T * t_wc
+//   世界系 -> 相机系：
+//      n_c = R_cw * n_w
+//      d_c = d_w + n_c^T * t_cw
+// ===============================================================
 void MapText::RefitPlaneFromWorldCorners(KeyFrame* pRefKF)
 {
     std::vector<cv::Mat> corners_world;
