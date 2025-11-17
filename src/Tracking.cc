@@ -2181,20 +2181,10 @@ bool Tracking::FitPlaneRANSAC(const std::vector<cv::Mat>& vPoints3D_world, Eigen
     return false;
 }
 
-
 /**
- * @brief (可复用) 为指定关键帧中尚未关联的文本检测创建新的MapText地标
- * @param pKF 需要处理的关键帧
- */
-// src/Tracking.cc
-
-/**
- * @brief (强化版) 为指定关键帧中尚未关联的文本检测创建新的MapText地标
- * @param pKF 需要处理的关键帧
- */
-/**
- * @brief (【已修复】) 为指定关键帧中尚未关联的文本检测创建新的MapText地标
- * @param pKF 需要处理的关键帧
+ * @brief 为指定关键帧中尚未关联的文本检测创建新的MapText地标
+ * 1. 使用 RANSAC (点云) 拟合鲁棒的平面参数。
+ * 2. 使用 2D Quad (射线相交) 计算精确的 3D 边界。
  */
 void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
 {
@@ -2213,10 +2203,7 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
         if (pKF->mvpMapTexts[i]) continue; // 已有关联
 
         const auto& det = pKF->vTextDetections[i];
-        
-        // 【修复点 1】: 我们需要的是 det->quad, 而不是 det->bbox
-        // const auto& bbox = det->bbox; // 旧的、错误的代码
-        const auto& quad_pts = det->quad; // 新的、正确的代码
+        const auto& quad_pts = det->quad;
         if (quad_pts.size() != 4)
         {
             std::cerr << "[TextCreate] 警告: KF " << pKF->mnId << " 上的检测 " << i 
@@ -2224,7 +2211,7 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
             continue; // 如果没有四边形数据，则跳过这个文本
         }
 
-        // 1) 特征点筛选（使用紧密的四边形来获取内部点会更准，但用bbox也可以接受，这里保持原样）
+        // 1) 特征点筛选
         const auto& bbox = det->bbox; // 仅用于 GetFeaturesInBox
         const std::vector<size_t> vFeatureIndices = pKF->GetFeaturesInBox(bbox[0], bbox[2], bbox[1], bbox[3]);
         if (vFeatureIndices.size() < MIN_FEATURES_FOR_PLANE) continue;
@@ -2260,7 +2247,7 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
         std::vector<bool> vbInliers;
         if (!FitPlaneRANSAC(vPoints3D_world, plane_world, vbInliers)) continue;
 
-        // 5) 将 plane 转到参考关键帧相机坐标系并做几何校验（只算一次）
+        // 5) 将 plane 转到参考关键帧相机坐标系并做几何校验
         cv::Mat Twc_ref = pKF->GetPoseInverse(); // world <- camera_ref
         Eigen::Matrix4d T_world_cam; cv::cv2eigen(Twc_ref, T_world_cam);
         Eigen::Matrix3d R_wc = T_world_cam.block<3,3>(0,0);
@@ -2277,7 +2264,6 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
 
         // 6) 检查 2D四边形(quad) 四角在平面上的射线交点是否在相机前方（并生成世界角点）
         
-        // 【修复点 2】: 使用 quad_pts (来自 det->quad)，而不是 bbox 的角点
         std::vector<cv::Point2f> corners_px;
         corners_px.reserve(4);
         corners_px.push_back(cv::Point2f(quad_pts[0].x(), quad_pts[0].y()));
@@ -2291,7 +2277,7 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
 
         std::vector<cv::Mat> bbox3D_world; bbox3D_world.reserve(4);
         int nValidCorners = 0;
-        for (const auto &c : corners_px) // *** 使用修正后的角点 ***
+        for (const auto &c : corners_px)
         {
             double u_norm = (c.x - pKF->cx) / pKF->fx;
             double v_norm = (c.y - pKF->cy) / pKF->fy;
@@ -2334,7 +2320,7 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
             Eigen::Vector3d t2 = n_w.cross(t1); t2.normalize();
             double meanDepth = (mean[0] > 0) ? mean[0] : 1.0;  // 兜底值
             
-            // 【修复点 3】(可选但推荐): 用2D quad的宽高比来调整 t1 和 t2 的缩放
+            //用2D quad的宽高比来调整 t1 和 t2 的缩放
             // 这比用 'box_scale' 效果更好
             float quad_width_px = std::max((quad_pts[0] - quad_pts[1]).norm(), (quad_pts[2] - quad_pts[3]).norm());
             float quad_height_px = std::max((quad_pts[1] - quad_pts[2]).norm(), (quad_pts[3] - quad_pts[0]).norm());
@@ -2373,7 +2359,9 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
         textInfo.mean = det->text;
         textInfo.score = det->score;
 
+        //使用 RANSAC 得到的平面 (plane_ref) 来构造 MapText
         MapText* pNewMT = new MapText(pKF, plane_ref, textInfo, mpMap);
+        
         Eigen::Vector4d plane_after = pNewMT->GetWorldPlane(); 
         Eigen::Vector3d n_before = plane_ref.head<3>().normalized();
         Eigen::Vector3d n_after = plane_after.head<3>().normalized();
@@ -2384,12 +2372,12 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
                 << " | cos=" << n_before.dot(n_after) << std::endl;
 
 
-        // 写入世界角点，保证后续 GetWorldBoundingBox 优先返回持久化角点
+        // 写入从 2D quad 投影得到的精确世界角点
         pNewMT->SetWorldCorners(bbox3D_world);
 
-        // (重要) 使用这些新计算的、更准确的世界角点重拟合一次平面参数
-        pNewMT->RefitPlaneFromWorldCorners(pKF);
-
+        
+        // 使用这些新计算的、更准确的世界角点重拟合一次平面参数
+        // pNewMT->RefitPlaneFromWorldCorners(pKF);
         // 语义初始化
         float init_cost = CalculateSemanticCost(pNewMT, pKF, textInfo);
         TextInfo init_info = textInfo;

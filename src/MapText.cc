@@ -207,30 +207,26 @@ MapText* MapText::GetReplaced()
 }
 
 /**
- * @brief 计算并返回该文本地标在世界坐标系下的3D包围盒的8个角点
- * @return std::vector<cv::Mat> 8个3x1的Mat，每个代表一个角点的世界坐标
- */
-/**
- * @brief 计算并返回该文本地标在世界坐标系下的3D包围盒的角点
- * @return std::vector<cv::Mat> 4个（平面）或8个（立方体）3x1的Mat，每个代表一个角点的世界坐标
+ * @brief 计算并返回该文本地标在世界坐标系下的3D包围盒的4个【平面】角点
+ * * @return std::vector<cv::Mat> 4个3x1的Mat，每个代表一个角点的世界坐标
  */
 std::vector<cv::Mat> MapText::GetWorldBoundingBox()
 {
     std::unique_lock<std::mutex> lock(mMutexFeatures);
     
-    // 优先返回持久化的角点（这是标准路径）
+    // 优先返回持久化的角点
     if (!mWorldCorners.empty()) {
         return mWorldCorners;
     }
 
-    // --- 回退逻辑 (Fallback Logic) ---
-    // 如果 mWorldCorners 为空 (例如从旧地图加载)，则尝试从参考帧动态计算
+    // 回退逻辑
+    //    (如果 mWorldCorners 为空, e.g. 从旧地图加载)
     std::cout << "[GetWorldBoundingBox] 警告: MapText " << mnId 
-              << " 缺少 mWorldCorners, 正在尝试从RefKF回退计算..." << std::endl;
+              << " 缺少 mWorldCorners, 正在从RefKF回退计算 (4-point planar)..." << std::endl;
               
     std::vector<cv::Mat> bbox3D_world;
 
-    // --- 1. 从参考关键帧获取原始的2D检测四边形 (quad) ---
+    // 从参考关键帧获取原始的2D检测四边形 (quad)
     if (!mObservations.count(mpRefKF)) {
         std::cerr << "[GetWorldBoundingBox] Fallback失败: MapText " << mnId << " 没有参考帧." << std::endl;
         return bbox3D_world; // 如果没有参考帧的观测信息，则无法计算
@@ -243,7 +239,6 @@ std::vector<cv::Mat> MapText::GetWorldBoundingBox()
         return bbox3D_world;
     }
 
-    // 【修复点】: 使用 det->quad, 而不是 det->bbox
     const auto& quad_pts = mpRefKF->vTextDetections[ref_det_idx]->quad;
     if (quad_pts.size() != 4) {
         std::cerr << "[GetWorldBoundingBox] Fallback失败: MapText " << mnId 
@@ -259,8 +254,8 @@ std::vector<cv::Mat> MapText::GetWorldBoundingBox()
     corners_2d.push_back(cv::Point2f(quad_pts[2].x(), quad_pts[2].y()));
     corners_2d.push_back(cv::Point2f(quad_pts[3].x(), quad_pts[3].y()));
 
-    // --- 2. 将2D角点反投影到参考帧相机坐标系的3D平面上 ---
-    std::vector<cv::Mat> front_face_3d_cam;
+    // 将2D角点反投影到参考帧相机坐标系的3D平面上
+    std::vector<cv::Mat> corners_3d_cam; // 存储4个相机系角点
     const Eigen::Vector3d n_c = mThetaRef.head<3>(); // 平面法向量 (相机坐标系)
     const double d_c = mThetaRef[3];               // 平面距离 (相机坐标系)
 
@@ -270,9 +265,10 @@ std::vector<cv::Mat> MapText::GetWorldBoundingBox()
         float u_norm = (corner.x - mpRefKF->cx) / mpRefKF->fx;
         float v_norm = (corner.y - mpRefKF->cy) / mpRefKF->fy;
         Eigen::Vector3d ray(u_norm, v_norm, 1.0);
-        ray.normalize(); // 归一化射线
+        // ray 不需要归一化, 因为 t = -d_c / n_c.dot(ray) 会自动缩放
+        // 使得 (t * ray) 的 z 坐标正确。
 
-        // 射线与平面求交
+        // 射线与平面求交: n_c^T * (t * ray) + d_c = 0  => t * (n_c.dot(ray)) = -d_c
         double n_dot_ray = n_c.dot(ray);
         if (std::fabs(n_dot_ray) < 1e-6) continue; // 射线与平面平行
 
@@ -283,36 +279,27 @@ std::vector<cv::Mat> MapText::GetWorldBoundingBox()
         
         Eigen::Vector3d p3D_cam_eig = t * ray;
         
-        front_face_3d_cam.push_back((cv::Mat_<float>(3, 1) << p3D_cam_eig.x(), p3D_cam_eig.y(), p3D_cam_eig.z()));
+        corners_3d_cam.push_back((cv::Mat_<float>(3, 1) << p3D_cam_eig.x(), p3D_cam_eig.y(), p3D_cam_eig.z()));
     }
     
-    if (front_face_3d_cam.size() != 4) {
+    if (corners_3d_cam.size() != 4) {
         std::cerr << "[GetWorldBoundingBox] Fallback失败: MapText " << mnId 
-                  << " 射线-平面相交失败 (仅 " << front_face_3d_cam.size() << " 个有效角点)." << std::endl;
+                  << " 射线-平面相交失败 (仅 " << corners_3d_cam.size() << " 个有效角点)." << std::endl;
         return bbox3D_world; // 必须要有4个角点
     }
 
-    // --- 3. 根据平面法线方向，构造一个有厚度的包围盒 ---
-    const float BOX_THICKNESS = 0.02; // 假设文本有2cm的厚度
-    Eigen::Vector3d n_c_norm = n_c.normalized();
-    cv::Mat normal_cv = (cv::Mat_<float>(3, 1) << n_c_norm.x(), n_c_norm.y(), n_c_norm.z());
-    
-    std::vector<cv::Mat> back_face_3d_cam;
-    for (const auto& p_front : front_face_3d_cam) {
-        back_face_3d_cam.push_back(p_front - BOX_THICKNESS * normal_cv);
-    }
-    
-    // --- 4. 将包围盒的8个3D角点从参考帧相机坐标系转换到世界坐标系 ---
+    // 将包围盒的【4个平面角点】从参考帧相机坐标系转换到世界坐标系
     cv::Mat Twc_ref = mpRefKF->GetPoseInverse();
     cv::Mat Rwc_ref = Twc_ref.rowRange(0, 3).colRange(0, 3);
-    cv::Mat Ow_ref = Twc_ref.rowRange(0, 3).col(3);
+    cv::Mat Ow_ref = Twc_ref.rowRange(0, 3).col(3); // Ow_ref 就是 t_wc
 
-    for (const auto& p_cam : front_face_3d_cam) {
+    bbox3D_world.reserve(4);
+    for (const auto& p_cam : corners_3d_cam) {
         bbox3D_world.push_back(Rwc_ref * p_cam + Ow_ref);
     }
-    for (const auto& p_cam : back_face_3d_cam) {
-        bbox3D_world.push_back(Rwc_ref * p_cam + Ow_ref);
-    }
+    
+    // 缓存mWorldCorners
+    mWorldCorners = bbox3D_world;
     
     return bbox3D_world;
 }
