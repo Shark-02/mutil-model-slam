@@ -361,6 +361,83 @@ int Optimizer::PoseOptimization(Frame *pFrame)
     }
     }
 
+    // --- PLAN A: Text Corner Optimization ---
+    // Added by Copilot: Optimize pose using 3D Text corners projected to 2D detection corners
+    struct TextEdgeInfo {
+        size_t detIdx;
+        vector<g2o::EdgeSE3ProjectXYZOnlyPose*> edges;
+    };
+    vector<TextEdgeInfo> vTextEdges;
+
+    // Iterate over all text detections in this frame
+    for(size_t idx=0; idx<pFrame->vTextDetections.size(); idx++)
+    {
+        MapText* pMT = pFrame->mvpMapTexts[idx];
+        if(!pMT || pMT->isBad()) continue;
+
+        // Get 3D corners (TL, TR, BR, BL)
+        std::vector<cv::Mat> worldCorners = pMT->GetWorldCorners();
+        if(worldCorners.size() != 4) continue;
+
+        Detection::Ptr det = pFrame->vTextDetections[idx];
+        
+        // Get 2D corners
+        std::vector<Eigen::Vector2d> corners2d;
+        if(det->quad.size() == 4) {
+            corners2d = det->quad;
+        } else {
+            // Fallback to bbox (TL, TR, BR, BL)
+            double x1 = det->bbox[0];
+            double y1 = det->bbox[1];
+            double x2 = det->bbox[2];
+            double y2 = det->bbox[3];
+            corners2d.push_back(Eigen::Vector2d(x1, y1)); // TL
+            corners2d.push_back(Eigen::Vector2d(x2, y1)); // TR
+            corners2d.push_back(Eigen::Vector2d(x2, y2)); // BR
+            corners2d.push_back(Eigen::Vector2d(x1, y2)); // BL
+        }
+
+        TextEdgeInfo edgeInfo;
+        edgeInfo.detIdx = idx;
+
+        // Create 4 edges for the 4 corners
+        for(int k=0; k<4; ++k)
+        {
+            g2o::EdgeSE3ProjectXYZOnlyPose* e = new g2o::EdgeSE3ProjectXYZOnlyPose();
+            e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(0)));
+            
+            e->setMeasurement(corners2d[k]);
+            
+            // Low weight for text boxes (high uncertainty)
+            // Standard points use invSigma2. We use a fixed low weight (e.g. sigma=10px -> info=0.01)
+            // This ensures text doesn't break the optimization if the box is jittery
+            e->setInformation(Eigen::Matrix2d::Identity() * 0.01); 
+
+            g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
+            e->setRobustKernel(rk);
+            rk->setDelta(deltaMono); // Use same delta as mono points
+
+            e->fx = pFrame->fx;
+            e->fy = pFrame->fy;
+            e->cx = pFrame->cx;
+            e->cy = pFrame->cy;
+
+            cv::Mat Xw_cv = worldCorners[k];
+            e->Xw[0] = Xw_cv.at<float>(0);
+            e->Xw[1] = Xw_cv.at<float>(1);
+            e->Xw[2] = Xw_cv.at<float>(2);
+
+            optimizer.addEdge(e);
+            edgeInfo.edges.push_back(e);
+        }
+        vTextEdges.push_back(edgeInfo);
+        nInitialCorrespondences++; 
+    }
+
+    // [DEBUG] Print text optimization info
+    if(!vTextEdges.empty()) {
+        std::cout << "[Optimizer] Added " << vTextEdges.size() << " text constraints (4 corners each)." << std::endl;
+    }
 
     if(nInitialCorrespondences<3)
         return 0;
@@ -436,6 +513,61 @@ int Optimizer::PoseOptimization(Frame *pFrame)
 
             if(it==2)
                 e->setRobustKernel(0);
+        }
+
+        // --- PLAN A: Text Outlier Rejection ---
+        for(auto& info : vTextEdges)
+        {
+            // Check if this detection was marked as outlier
+            if(pFrame->mvbOutlierText.size() > info.detIdx && pFrame->mvbOutlierText[info.detIdx])
+            {
+                for(auto* e : info.edges) e->computeError();
+            }
+
+            int nBadCorners = 0;
+            for(auto* e : info.edges)
+            {
+                if(e->chi2() > chi2Mono[it]) 
+                {
+                    nBadCorners++;
+                }
+            }
+
+            // If more than 2 corners are bad, mark detection as outlier
+            bool isOutlier = (nBadCorners >= 2);
+            
+            if(isOutlier)
+            {
+                if(pFrame->mvbOutlierText.size() > info.detIdx)
+                    pFrame->mvbOutlierText[info.detIdx] = true;
+                
+                for(auto* e : info.edges) e->setLevel(1);
+                nBad++; // Count as bad observation
+            }
+            else
+            {
+                if(pFrame->mvbOutlierText.size() > info.detIdx)
+                    pFrame->mvbOutlierText[info.detIdx] = false;
+                
+                for(auto* e : info.edges) e->setLevel(0);
+            }
+            
+            if(it==2)
+                for(auto* e : info.edges) e->setRobustKernel(0);
+        }
+
+        // [DEBUG] Print text error stats
+        if(!vTextEdges.empty()) {
+            float totalChi2 = 0;
+            int nActive = 0;
+            for(auto& info : vTextEdges) {
+                if(pFrame->mvbOutlierText.size() > info.detIdx && !pFrame->mvbOutlierText[info.detIdx]) {
+                    for(auto* e : info.edges) totalChi2 += e->chi2();
+                    nActive++;
+                }
+            }
+            if(nActive > 0)
+                std::cout << "[Optimizer] Iter " << it << ": Active Texts=" << nActive << " AvgChi2=" << totalChi2/(nActive*4) << std::endl;
         }
 
         if(optimizer.edges().size()<10)

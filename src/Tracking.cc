@@ -308,7 +308,7 @@ cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const d
     mCurrentFrame.vTextDeteCorMap.resize(mCurrentFrame.vTextDetections.size(), -1);
     // 初始化文本匹配结果容器
     mCurrentFrame.mvpMapTexts.resize(mCurrentFrame.vTextDetections.size(), static_cast<MapText*>(NULL));
-    //mCurrentFrame.mvbOutlierText.resize(mCurrentFrame.N, false);
+    mCurrentFrame.mvbOutlierText.resize(mCurrentFrame.vTextDetections.size(), false);
 
     current_depth_data_per_det_.clear();
     current_depth_data_per_det_.resize(current_frame_detections_.size(), std::make_pair(0.0f, 0.0f));
