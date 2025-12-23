@@ -26,6 +26,7 @@
 #include "LoopClosing.h"
 #include "Tracking.h"
 #include "KeyFrameDatabase.h"
+#include "TextOptimizer.h"
 
 #include <mutex>
 

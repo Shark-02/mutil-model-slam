@@ -41,7 +41,7 @@ struct TextInfo {
 class MapText
 {
 public:
-    // EIGEN_MAKE_ALIGNED_OPERATOR_NEW // 如果你在类中直接使用Eigen固定大小的成员，需要这个宏
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW // 如果你在类中直接使用Eigen固定大小的成员，需要这个宏
 
     // 构造函数 (适配ORB-SLAM2/V-OOM的版本)
     MapText(KeyFrame* pRefKF, const Eigen::Vector4d& theta, 
@@ -113,12 +113,26 @@ public:
     // 如果需要：清除持久化角点
     void ClearWorldCorners();
 
+    // 设置/获取参考帧坐标系下的平面参数
+    void SetPlaneRef(const Eigen::Vector4d& thetaRef);
+    Eigen::Vector4d GetPlaneRef() const;
+
+    // 强制根据当前平面参数重新计算世界角点
+    void UpdateCornersFromPlane();
+
+    // 设置/获取 RANSAC 内点 (存储在参考帧坐标系下)
+    void SetInlierPoints(const std::vector<cv::Mat>& points);
+    std::vector<cv::Mat> GetInlierPoints();
+
 protected:
     // --- 内部数据与锁 ---
 
     // 几何信息: 存储在参考关键帧坐标系下的平面方程 [nx, ny, nz, d]
     // n'x + d = 0
     Eigen::Vector4d mThetaRef;
+
+    // RANSAC 内点 (参考帧坐标系)
+    std::vector<cv::Mat> mInlierPoints;
 
     // 参考关键帧
     KeyFrame* mpRefKF;

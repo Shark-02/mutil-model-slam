@@ -24,6 +24,7 @@
 #include "Optimizer.h"
 #include "ObjectMatcher.h"
 #include "TextMatcher.h"
+#include "TextOptimizer.h"
 
 #include<mutex>
 #include <unistd.h>
@@ -364,20 +365,28 @@ void LocalMapping::TextStatusUpdate()
             // ---------- 晋升逻辑 ----------
             if (nObs >= minObsForGood && nAge >= minAgeForGood)
             {
-                // TODO: 可插入 ThetaOptimMultiFs 优化或几何一致性检查
-                bool optimization_successful = true;
-                double cosAngleAfterOptimization = 1.0;
+                // 调用多帧平面参数优化器
+                // 返回 true 表示优化成功且平面参数稳定
+                bool optimization_successful = TextOptimizer::OptimizePlaneMultiFrame(pMT, true);
 
-                if (optimization_successful && cosAngleAfterOptimization > 0.9)
+                if (optimization_successful)
                 {
                     pMT->mState = TEXTGOOD;
                     std::cout << "[LocalMapping] MapText " << pMT->mnId
                               << " ('" << pMT->GetText()
-                              << "') promoted to GOOD. Obs=" << nObs
+                              << "') promoted to GOOD after optimization. Obs=" << nObs
                               << " Age=" << nAge << std::endl;
 
                     lit = mlpRecentAddedMapTexts.erase(lit);
                     continue;
+                }
+                else
+                {
+                    // 优化失败但观测数足够，可能是几何不一致
+                    // 给予更多机会，如果超过最大年龄则剔除
+                    std::cout << "[LocalMapping] MapText " << pMT->mnId
+                              << " optimization failed, remain IMMATURE. Obs=" << nObs
+                              << " Age=" << nAge << std::endl;
                 }
             }
 

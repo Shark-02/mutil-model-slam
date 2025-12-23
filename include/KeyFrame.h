@@ -202,6 +202,7 @@ public:
     const int mnMaxX;
     const int mnMaxY;
     const cv::Mat mK;
+    const cv::Mat mDistCoef;
 
     // MapPoints associated to keypoints
     std::vector<MapPoint*> mvpMapPoints;

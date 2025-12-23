@@ -373,7 +373,7 @@ int Optimizer::PoseOptimization(Frame *pFrame)
     for(size_t idx=0; idx<pFrame->vTextDetections.size(); idx++)
     {
         MapText* pMT = pFrame->mvpMapTexts[idx];
-        if(!pMT || pMT->isBad()) continue;
+        if(pMT->GetState() != TEXTGOOD) continue;
 
         // Get 3D corners (TL, TR, BR, BL)
         std::vector<cv::Mat> worldCorners = pMT->GetWorldCorners();

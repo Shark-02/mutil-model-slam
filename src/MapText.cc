@@ -88,9 +88,44 @@ void MapText::EraseObservation(KeyFrame* pKF)
             {
                 if(!mObservations.empty())
                 {
-                    mpRefKF = mObservations.begin()->first;
-                    // TODO: 需要重新计算 mThetaRef
-                    // 这是一个复杂操作，暂不实现。在当前框架下，参考帧不应被轻易删除。
+                    KeyFrame* pNewRefKF = mObservations.begin()->first;
+
+                    // 计算从旧参考帧到新参考帧的变换 T_new_old = T_new_world * T_world_old
+                    cv::Mat Tcw_new = pNewRefKF->GetPose();
+                    cv::Mat Twc_old = pKF->GetPoseInverse();
+                    cv::Mat T_new_old = Tcw_new * Twc_old;
+
+                    Eigen::Matrix4d T_no;
+                    cv::cv2eigen(T_new_old, T_no);
+                    Eigen::Matrix3d R_no = T_no.block<3,3>(0,0);
+                    Eigen::Vector3d t_no = T_no.block<3,1>(0,3);
+
+                    // 1. 更新平面参数 mThetaRef
+                    // n_new = R_no * n_old
+                    // d_new = d_old - n_new.dot(t_no)
+                    Eigen::Vector3d n_old = mThetaRef.head<3>();
+                    double d_old = mThetaRef[3];
+
+                    Eigen::Vector3d n_new = R_no * n_old;
+                    double d_new = d_old - n_new.dot(t_no);
+
+                    mThetaRef.head<3>() = n_new;
+                    mThetaRef[3] = d_new;
+
+                    // 2. 更新内点 mInlierPoints
+                    // P_new = R_no * P_old + t_no
+                    std::vector<cv::Mat> newInliers;
+                    newInliers.reserve(mInlierPoints.size());
+                    for(const auto& pt : mInlierPoints)
+                    {
+                        if(pt.empty()) continue;
+                        Eigen::Vector3d p_old(pt.at<float>(0), pt.at<float>(1), pt.at<float>(2));
+                        Eigen::Vector3d p_new = R_no * p_old + t_no;
+                        newInliers.push_back((cv::Mat_<float>(3,1) << p_new.x(), p_new.y(), p_new.z()));
+                    }
+                    mInlierPoints = newInliers;
+
+                    mpRefKF = pNewRefKF;
                 }
             }
             
@@ -391,7 +426,7 @@ void MapText::ClearWorldCorners()
 //      d_w = d_c - n_w^T * t_wc
 //   世界系 -> 相机系：
 //      n_c = R_cw * n_w
-//      d_c = d_w + n_c^T * t_cw
+//      d_c = d_w - n_c^T * t_cw
 // ===============================================================
 void MapText::RefitPlaneFromWorldCorners(KeyFrame* pRefKF)
 {
@@ -483,6 +518,38 @@ TextStatus MapText::GetState() const {
 void MapText::SetState(const TextStatus &s) {
     std::unique_lock<std::mutex> lock(mMutexFeatures);
     mState = s;
+}
+
+void MapText::SetPlaneRef(const Eigen::Vector4d& thetaRef)
+{
+    std::unique_lock<std::mutex> lock(mMutexFeatures);
+    mThetaRef = thetaRef;
+}
+
+Eigen::Vector4d MapText::GetPlaneRef() const
+{
+    std::unique_lock<std::mutex> lock(mMutexFeatures);
+    return mThetaRef;
+}
+
+void MapText::UpdateCornersFromPlane()
+{
+    // 1. 清空当前角点
+    ClearWorldCorners();
+    // 2. 触发重新计算 (GetWorldBoundingBox 会在 mWorldCorners 为空时使用 mThetaRef 重新计算)
+    GetWorldBoundingBox();
+}
+
+void MapText::SetInlierPoints(const std::vector<cv::Mat>& points)
+{
+    std::unique_lock<std::mutex> lock(mMutexFeatures);
+    mInlierPoints = points;
+}
+
+std::vector<cv::Mat> MapText::GetInlierPoints()
+{
+    std::unique_lock<std::mutex> lock(mMutexFeatures);
+    return mInlierPoints;
 }
 
 void MapText::SetReplaced(MapText* pMT)

@@ -2200,9 +2200,12 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
 
     for (size_t i = 0; i < pKF->vTextDetections.size(); ++i)
     {
-        if (pKF->mvpMapTexts[i]) continue; // 已有关联
+        if (pKF->mvpMapTexts[i])
+            continue; // 已有关联
 
         const auto& det = pKF->vTextDetections[i];
+        if (!det)
+            continue;
         const auto& quad_pts = det->quad;
         if (quad_pts.size() != 4)
         {
@@ -2375,6 +2378,22 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
         // 写入从 2D quad 投影得到的精确世界角点
         pNewMT->SetWorldCorners(bbox3D_world);
 
+        // 9) 存储 RANSAC 内点 (转换到参考帧坐标系)
+        std::vector<cv::Mat> inliers_ref;
+        for (size_t k = 0; k < vPoints3D_world.size(); ++k)
+        {
+            if (k < vbInliers.size() && vbInliers[k])
+            {
+                // vPoints3D_world 是世界坐标系下的点
+                // 需要转换到参考帧坐标系: p_ref = R_wc^T * (p_w - t_wc)
+                cv::Mat pw = vPoints3D_world[k];
+                Eigen::Vector3d pw_eig(pw.at<float>(0), pw.at<float>(1), pw.at<float>(2));
+                Eigen::Vector3d p_ref = R_wc.transpose() * (pw_eig - t_wc);
+                
+                inliers_ref.push_back((cv::Mat_<float>(3,1) << p_ref.x(), p_ref.y(), p_ref.z()));
+            }
+        }
+        pNewMT->SetInlierPoints(inliers_ref);
         
         // 使用这些新计算的、更准确的世界角点重拟合一次平面参数
         // pNewMT->RefitPlaneFromWorldCorners(pKF);
