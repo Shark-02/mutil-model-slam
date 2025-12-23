@@ -372,7 +372,9 @@ int Optimizer::PoseOptimization(Frame *pFrame)
     // Iterate over all text detections in this frame
     for(size_t idx=0; idx<pFrame->vTextDetections.size(); idx++)
     {
+        if(idx >= pFrame->mvpMapTexts.size()) continue;
         MapText* pMT = pFrame->mvpMapTexts[idx];
+        if(!pMT) continue;
         if(pMT->GetState() != TEXTGOOD) continue;
 
         // Get 3D corners (TL, TR, BR, BL)
