@@ -39,6 +39,7 @@
 #include "System.h"
 #include "Utils.h"
 #include "Object.h"
+#include "AdaptiveWeightManager.h"
 
 #include <mutex>
 
@@ -299,6 +300,9 @@ protected:
     std::vector<Detection::Ptr> current_frame_good_detections_;
     Graph* current_frame_graph_;
     double current_mean_depth_ = 0.0;
+    
+    // 自适应权重管理器
+    AdaptiveWeightManager* mpAdaptiveWeightManager;
 };
 
 } //namespace ORB_SLAM

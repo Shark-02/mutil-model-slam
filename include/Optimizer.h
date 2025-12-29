@@ -33,6 +33,21 @@ namespace ORB_SLAM2
 {
 
 class LoopClosing;
+class AdaptiveWeightManager;  // 前向声明
+
+/**
+ * @brief 模态权重结构（简化版，用于传参）
+ */
+struct OptimizationWeights
+{
+    double textInfoScale = 0.01;    // 文本信息矩阵缩放
+    double objectInfoScale = 0.01;  // 物体信息矩阵缩放
+    double pointInfoScale = 1.0;    // 点特征信息矩阵缩放
+    
+    OptimizationWeights() = default;
+    OptimizationWeights(double text, double object, double point)
+        : textInfoScale(text), objectInfoScale(object), pointInfoScale(point) {}
+};
 
 class Optimizer
 {
@@ -43,7 +58,12 @@ public:
     void static GlobalBundleAdjustemnt(Map* pMap, int nIterations=5, bool *pbStopFlag=NULL,
                                        const unsigned long nLoopKF=0, const bool bRobust = true);
     void static LocalBundleAdjustment(KeyFrame* pKF, bool *pbStopFlag, Map *pMap);
+    
+    // 原始版本（向后兼容）
     int static PoseOptimization(Frame* pFrame);
+    
+    // 带自适应权重的版本
+    int static PoseOptimization(Frame* pFrame, const OptimizationWeights& weights);
 
     // if bFixScale is true, 6DoF optimization (stereo,rgbd), 7DoF otherwise (mono)
     void static OptimizeEssentialGraph(Map* pMap, KeyFrame* pLoopKF, KeyFrame* pCurKF,

@@ -41,6 +41,7 @@
 #include "Graph.h"
 #include "ObjectMatcher.h"
 #include "TextMatcher.h"
+#include "AdaptiveWeightManager.h"
 #include <iostream>
 
 #include <mutex>
@@ -166,6 +167,15 @@ Tracking::Tracking(System *pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer,
         else
             mDepthMapFactor = 1.0f/mDepthMapFactor;
     }
+    
+    // 初始化自适应权重管理器
+    mpAdaptiveWeightManager = new AdaptiveWeightManager();
+    // 设置图像尺寸（从相机参数推断，如果有的话）
+    int imgWidth = static_cast<int>(fSettings["Camera.width"]);
+    int imgHeight = static_cast<int>(fSettings["Camera.height"]);
+    if (imgWidth <= 0) imgWidth = 640;
+    if (imgHeight <= 0) imgHeight = 480;
+    mpAdaptiveWeightManager->SetImageSize(imgWidth, imgHeight);
 
 }
 
@@ -1372,8 +1382,23 @@ bool Tracking::TrackWithMotionModel()
     //std::cout << "候选地标数量: " << mvpLocalMapTexts.size() << std::endl;
     text_matcher.SearchTextByProjection(mCurrentFrame,mvpLocalMapTexts); 
 
-    // Optimize frame pose with all matches
-    Optimizer::PoseOptimization(&mCurrentFrame);
+    // 更新自适应权重
+    mpAdaptiveWeightManager->UpdateWeights(
+        &mCurrentFrame,
+        current_frame_detections_,           // 物体检测
+        current_frame_text_detections_,       // 文本检测
+        std::vector<MapText*>(mCurrentFrame.mvpMapTexts.begin(), mCurrentFrame.mvpMapTexts.end())
+    );
+    
+    // 获取优化权重并调用带权重的PoseOptimization
+    OptimizationWeights optWeights(
+        mpAdaptiveWeightManager->GetCurrentWeights().textInfoScale,
+        mpAdaptiveWeightManager->GetCurrentWeights().objectInfoScale,
+        mpAdaptiveWeightManager->GetCurrentWeights().pointInfoScale
+    );
+    
+    // Optimize frame pose with all matches (使用自适应权重)
+    Optimizer::PoseOptimization(&mCurrentFrame, optWeights);
 
     // Discard outliers
     int nmatchesMap = 0;
@@ -1430,8 +1455,29 @@ bool Tracking::TrackLocalMap(bool use_object)
     //std::cout << "候选地标数量: " << mvpLocalMapTexts.size() << std::endl;
     text_matcher.SearchTextByProjection(mCurrentFrame,mvpLocalMapTexts); 
 
-    // Optimize Pose
-    Optimizer::PoseOptimization(&mCurrentFrame);
+    // 更新自适应权重（TrackLocalMap阶段）
+    mpAdaptiveWeightManager->UpdateWeights(
+        &mCurrentFrame,
+        current_frame_detections_,
+        current_frame_text_detections_,
+        std::vector<MapText*>(mCurrentFrame.mvpMapTexts.begin(), mCurrentFrame.mvpMapTexts.end())
+    );
+    
+    // 获取优化权重
+    OptimizationWeights optWeights(
+        mpAdaptiveWeightManager->GetCurrentWeights().textInfoScale,
+        mpAdaptiveWeightManager->GetCurrentWeights().objectInfoScale,
+        mpAdaptiveWeightManager->GetCurrentWeights().pointInfoScale
+    );
+    
+    // 每隔一段时间打印权重状态（用于调试）
+    static int printCounter = 0;
+    if (++printCounter % 30 == 0) {
+        mpAdaptiveWeightManager->PrintStatus();
+    }
+    
+    // Optimize Pose (使用自适应权重)
+    Optimizer::PoseOptimization(&mCurrentFrame, optWeights);
     mnMatchesInliers = 0;
 
     // Update MapPoints Statistics
