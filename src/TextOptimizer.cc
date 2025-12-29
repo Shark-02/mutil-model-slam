@@ -99,32 +99,9 @@ bool TextOptimizer::OptimizePlaneMultiFrame(MapText* pMT, bool bFixScale)
               << " | theta=(" << theta_init.transpose() << ")" << std::endl;
 
     // =========================================================================
-    // 设置 g2o 优化器
+    // 预处理：获取各种数据
     // =========================================================================
-    g2o::SparseOptimizer optimizer;
     
-    typedef g2o::BlockSolver<g2o::BlockSolverTraits<3, 1>> BlockSolver_3_1;
-    typedef g2o::LinearSolverDense<BlockSolver_3_1::PoseMatrixType> LinearSolver;
-    
-    auto linearSolver = new LinearSolver();
-    auto solver_ptr = new BlockSolver_3_1(linearSolver);
-    auto solver = new g2o::OptimizationAlgorithmLevenberg(solver_ptr);
-    
-    optimizer.setAlgorithm(solver);
-    optimizer.setVerbose(false);
-
-    // =========================================================================
-    // 添加顶点：θ = -n/d (3维，参考帧坐标系)
-    // =========================================================================
-    VertexTheta3D* vTheta = new VertexTheta3D();
-    vTheta->setEstimate(theta_init);
-    vTheta->setId(0);
-    optimizer.addVertex(vTheta);
-
-    int edgeId = 0;
-    int nPointEdges = 0;
-    int nCornerEdges = 0;
-
     // 获取参考帧的位姿
     cv::Mat Twc_ref_cv = pRefKF->GetPoseInverse();
     Eigen::Matrix4d Twc_ref;
@@ -132,36 +109,7 @@ bool TextOptimizer::OptimizePlaneMultiFrame(MapText* pMT, bool bFixScale)
     Eigen::Matrix3d R_wc = Twc_ref.block<3,3>(0,0);
     Eigen::Vector3d t_wc = Twc_ref.block<3,1>(0,3);
 
-    // =========================================================================
-    // 添加点云约束（RANSAC 内点，参考帧坐标系）
-    // =========================================================================
-    std::vector<cv::Mat> inliers_ref = pMT->GetInlierPoints();
-    
-    for (const auto& pt_mat : inliers_ref)
-    {
-        // 内点已经在参考帧坐标系下
-        Eigen::Vector3d p_ref(pt_mat.at<float>(0), pt_mat.at<float>(1), pt_mat.at<float>(2));
-        
-        EdgePointToPlaneTheta* e = new EdgePointToPlaneTheta();
-        e->setVertex(0, vTheta);
-        e->setPoint3D(p_ref);
-        e->setMeasurement(0.0);  // 残差 = θ^T * X - 1，目标为0
-        e->setInformation(Eigen::Matrix<double, 1, 1>::Identity() * 100.0);
-        
-        g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
-        rk->setDelta(0.1);  // 对应约 0.1 的残差（因为我们的残差单位是无量纲的）
-        e->setRobustKernel(rk);
-        
-        e->setId(edgeId++);
-        optimizer.addEdge(e);
-        nPointEdges++;
-    }
-
-    // =========================================================================
-    // 添加角点重投影约束（所有观测帧）
-    // =========================================================================
-    
-    // [Optimization] Pre-calculate reference frame rays
+    // 获取参考帧的 corner rays
     auto itRef = observations.find(pRefKF);
     if (itRef == observations.end()) {
         std::cout << "[TextOptimizer] Reference KeyFrame not in observations!" << std::endl;
@@ -175,11 +123,127 @@ bool TextOptimizer::OptimizePlaneMultiFrame(MapText* pMT, bool bFixScale)
     std::vector<Eigen::Vector2d> cornerRays = GetCornerRays(pRefKF, 
         Eigen::Vector4d(refDet->bbox[0], refDet->bbox[1], refDet->bbox[2], refDet->bbox[3]));
 
-    // 检查 cornerRays 是否有效（去畸变可能失败导致少于4个角点）
     if (cornerRays.size() != 4) {
         std::cout << "[TextOptimizer] Failed to get 4 corner rays, got " << cornerRays.size() << std::endl;
         return false;
     }
+
+    // 获取点云内点
+    std::vector<cv::Mat> inliers_ref = pMT->GetInlierPoints();
+    int nPointEdges = static_cast<int>(inliers_ref.size());
+    
+    // 计算图像对角线长度，用于归一化视觉残差
+    double imgDiag = std::sqrt(pRefKF->mnMaxX * pRefKF->mnMaxX + pRefKF->mnMaxY * pRefKF->mnMaxY);
+    if (imgDiag < 100.0) imgDiag = 640.0;  // 默认值
+    double visualScale = 1.0 / imgDiag;    // 归一化因子，使像素误差变成 ~0.01-0.1 量级
+
+    // =========================================================================
+    // Stage 1: 仅点云约束优化
+    // =========================================================================
+    g2o::SparseOptimizer optimizer1;
+    
+    typedef g2o::BlockSolver<g2o::BlockSolverTraits<3, 1>> BlockSolver_3_1;
+    typedef g2o::LinearSolverDense<BlockSolver_3_1::PoseMatrixType> LinearSolver;
+    
+    {
+        auto linearSolver = new LinearSolver();
+        auto solver_ptr = new BlockSolver_3_1(linearSolver);
+        auto solver = new g2o::OptimizationAlgorithmLevenberg(solver_ptr);
+        optimizer1.setAlgorithm(solver);
+        optimizer1.setVerbose(false);
+    }
+
+    // 顶点
+    VertexTheta3D* vTheta1 = new VertexTheta3D();
+    vTheta1->setEstimate(theta_init);
+    vTheta1->setId(0);
+    optimizer1.addVertex(vTheta1);
+
+    int edgeId = 0;
+    
+    // 只添加点云约束
+    for (const auto& pt_mat : inliers_ref)
+    {
+        Eigen::Vector3d p_ref(pt_mat.at<float>(0), pt_mat.at<float>(1), pt_mat.at<float>(2));
+        
+        EdgePointToPlaneTheta* e = new EdgePointToPlaneTheta();
+        e->setVertex(0, vTheta1);
+        e->setPoint3D(p_ref);
+        e->setMeasurement(0.0);
+        e->setInformation(Eigen::Matrix<double, 1, 1>::Identity() * 1.0);  // 权重 1，因为这是唯一约束
+        
+        g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
+        rk->setDelta(0.1);
+        e->setRobustKernel(rk);
+        
+        e->setId(edgeId++);
+        optimizer1.addEdge(e);
+    }
+
+    if (nPointEdges < 5) {
+        std::cout << "[TextOptimizer] Too few point constraints (" << nPointEdges << "), skip optimization." << std::endl;
+        return false;
+    }
+
+    // Stage 1 优化
+    optimizer1.initializeOptimization();
+    optimizer1.computeActiveErrors();
+    double chi2_stage1_before = optimizer1.activeChi2();
+    
+    optimizer1.optimize(10);  // 10次迭代
+    
+    double chi2_stage1_after = optimizer1.activeChi2();
+    Eigen::Vector3d theta_stage1 = vTheta1->estimate();
+
+    std::cout << "[TextOptimizer] Stage1 (point cloud only): Chi2 " 
+              << chi2_stage1_before << " -> " << chi2_stage1_after
+              << " | theta=(" << theta_stage1.transpose() << ")" << std::endl;
+
+    // =========================================================================
+    // Stage 2: 点云 + 视觉约束（视觉权重极低且归一化）
+    // =========================================================================
+    g2o::SparseOptimizer optimizer2;
+    
+    {
+        auto linearSolver = new LinearSolver();
+        auto solver_ptr = new BlockSolver_3_1(linearSolver);
+        auto solver = new g2o::OptimizationAlgorithmLevenberg(solver_ptr);
+        optimizer2.setAlgorithm(solver);
+        optimizer2.setVerbose(false);
+    }
+
+    // 用 Stage 1 结果作为初值
+    VertexTheta3D* vTheta2 = new VertexTheta3D();
+    vTheta2->setEstimate(theta_stage1);
+    vTheta2->setId(0);
+    optimizer2.addVertex(vTheta2);
+
+    edgeId = 0;
+    int nCornerEdges = 0;
+
+    // 点云约束（权重 1.0）
+    for (const auto& pt_mat : inliers_ref)
+    {
+        Eigen::Vector3d p_ref(pt_mat.at<float>(0), pt_mat.at<float>(1), pt_mat.at<float>(2));
+        
+        EdgePointToPlaneTheta* e = new EdgePointToPlaneTheta();
+        e->setVertex(0, vTheta2);
+        e->setPoint3D(p_ref);
+        e->setMeasurement(0.0);
+        e->setInformation(Eigen::Matrix<double, 1, 1>::Identity() * 1.0);
+        
+        g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
+        rk->setDelta(0.1);
+        e->setRobustKernel(rk);
+        
+        e->setId(edgeId++);
+        optimizer2.addEdge(e);
+    }
+
+    // 视觉约束（归一化 + 极低权重）
+    // 权重设计：点云残差~0.1，归一化后视觉残差~0.05，权重 0.01
+    // 这样视觉贡献 ≈ 0.05² * 0.01 = 0.000025，远小于点云贡献 0.1² * 1 = 0.01
+    double visualWeight = 0.01;
 
     for (auto& [pKF, detIdx] : observations)
     {
@@ -199,43 +263,42 @@ bool TextOptimizer::OptimizePlaneMultiFrame(MapText* pMT, bool bFixScale)
         Eigen::Matrix3d R_cw = Tcw.block<3,3>(0,0);
         Eigen::Vector3d t_cw = Tcw.block<3,1>(0,3);
 
-        // 计算相对位姿：从参考帧到观测帧
-        // T_obs_ref = T_obs_world * T_world_ref
-        Eigen::Matrix3d R_rel = R_cw * R_wc;           // R_{ref→obs} = R_cw * R_wc
-        Eigen::Vector3d t_rel = R_cw * t_wc + t_cw;    // t_{ref→obs}
+        // 计算相对位姿
+        Eigen::Matrix3d R_rel = R_cw * R_wc;
+        Eigen::Vector3d t_rel = R_cw * t_wc + t_cw;
 
-        // 获取内参
+        // 获取内参（归一化后的 K，让投影误差变成归一化坐标误差）
         Eigen::Matrix3d K;
-        K << pKF->fx, 0, pKF->cx,
-             0, pKF->fy, pKF->cy,
+        K << pKF->fx * visualScale, 0, pKF->cx * visualScale,
+             0, pKF->fy * visualScale, pKF->cy * visualScale,
              0, 0, 1;
 
-        // 当前帧检测框的四个角点（观测值）
+        // 当前帧检测框的四个角点（归一化后）
         std::vector<Eigen::Vector2d> corners2D;
         if (det->quad.size() == 4) {
             for (const auto& q : det->quad)
-                corners2D.push_back(q);
+                corners2D.push_back(q * visualScale);
         } else {
-            corners2D.push_back(Eigen::Vector2d(bbox[0], bbox[1]));  // TL
-            corners2D.push_back(Eigen::Vector2d(bbox[2], bbox[1]));  // TR
-            corners2D.push_back(Eigen::Vector2d(bbox[2], bbox[3]));  // BR
-            corners2D.push_back(Eigen::Vector2d(bbox[0], bbox[3]));  // BL
+            corners2D.push_back(Eigen::Vector2d(bbox[0], bbox[1]) * visualScale);
+            corners2D.push_back(Eigen::Vector2d(bbox[2], bbox[1]) * visualScale);
+            corners2D.push_back(Eigen::Vector2d(bbox[2], bbox[3]) * visualScale);
+            corners2D.push_back(Eigen::Vector2d(bbox[0], bbox[3]) * visualScale);
         }
 
         for (int k = 0; k < 4; ++k)
         {
             EdgeHomographyProjection* e = new EdgeHomographyProjection();
-            e->setVertex(0, vTheta);
+            e->setVertex(0, vTheta2);
             e->setParams(cornerRays[k], R_rel, t_rel, K);
             e->setMeasurement(corners2D[k]);
-            e->setInformation(Eigen::Matrix2d::Identity() * 1.0);
+            e->setInformation(Eigen::Matrix2d::Identity() * visualWeight);
             
             g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
-            rk->setDelta(10.0);  // 10像素阈值
+            rk->setDelta(0.05);  // 归一化后约 0.05 对应原来的 ~30 像素
             e->setRobustKernel(rk);
             
             e->setId(edgeId++);
-            optimizer.addEdge(e);
+            optimizer2.addEdge(e);
             nCornerEdges++;
         }
     }
@@ -243,29 +306,23 @@ bool TextOptimizer::OptimizePlaneMultiFrame(MapText* pMT, bool bFixScale)
     std::cout << "[TextOptimizer] MapText " << pMT->mnId 
               << ": " << nPointEdges << " point edges, " 
               << nCornerEdges << " corner edges from "
-              << observations.size() << " observations" << std::endl;
+              << observations.size() << " observations"
+              << " (visualScale=" << visualScale << ", visualWeight=" << visualWeight << ")" << std::endl;
 
-    if (nPointEdges < 5 && nCornerEdges < 4) {
-        std::cout << "[TextOptimizer] Too few constraints, skip optimization." << std::endl;
-        return false;
-    }
-
-    // =========================================================================
-    // 执行优化
-    // =========================================================================
-    optimizer.initializeOptimization();
+    // Stage 2 优化（只做少量迭代，避免视觉约束累积影响）
+    optimizer2.initializeOptimization();
     
-    optimizer.computeActiveErrors();
-    double chi2_before = optimizer.activeChi2();
+    optimizer2.computeActiveErrors();
+    double chi2_before = optimizer2.activeChi2();
 
-    optimizer.optimize(10);
+    optimizer2.optimize(5);  // 只做 5 次迭代
 
-    double chi2_after = optimizer.activeChi2();
+    double chi2_after = optimizer2.activeChi2();
 
     // =========================================================================
     // 从优化后的 θ 恢复 (n, d)
     // =========================================================================
-    Eigen::Vector3d theta_opt = vTheta->estimate();
+    Eigen::Vector3d theta_opt = vTheta2->estimate();
     Eigen::Vector3d n_ref_new;
     double d_ref_new;
     ThetaToPlane(theta_opt, n_ref_new, d_ref_new);
@@ -282,7 +339,8 @@ bool TextOptimizer::OptimizePlaneMultiFrame(MapText* pMT, bool bFixScale)
     bool isPhysicallyValid = true;
     
     // 1. 平面不能离相机太近（防止穿过相机）
-    if (std::abs(d_ref_new) < 0.05) {
+    //    提高阈值到 0.1m，因为太近的平面会导致射线-平面相交失败
+    if (std::abs(d_ref_new) < 0.1) {
         std::cout << "[TextOptimizer] Warning: plane too close to camera, d=" << d_ref_new << std::endl;
         isPhysicallyValid = false;
     }
@@ -302,11 +360,20 @@ bool TextOptimizer::OptimizePlaneMultiFrame(MapText* pMT, bool bFixScale)
         std::cout << "[TextOptimizer] Warning: normal changed too much, cos=" << cos_angle << std::endl;
         isPhysicallyValid = false;
     }
+    
+    // 4. 距离变化不能太大（防止优化发散）
+    //    d 从 -1.337 变到 0.075 是明显的发散
+    double d_change_ratio = std::abs(d_ref_new / d_ref);
+    if (d_change_ratio < 0.3 || d_change_ratio > 3.0) {
+        std::cout << "[TextOptimizer] Warning: d changed too much, ratio=" << d_change_ratio 
+                  << " (d: " << d_ref << " -> " << d_ref_new << ")" << std::endl;
+        isPhysicallyValid = false;
+    }
 
     bool accept = (chi2_after <= chi2_before) && isPhysicallyValid;
 
     std::cout << "[TextOptimizer] MapText " << pMT->mnId 
-              << " | Chi2: " << chi2_before << " -> " << chi2_after
+              << " | Stage2 Chi2: " << chi2_before << " -> " << chi2_after
               << " | n_new=(" << n_ref_new.transpose() << ") d_new=" << d_ref_new
               << " | Valid: " << isPhysicallyValid
               << " | Accept: " << accept << std::endl;
@@ -323,10 +390,24 @@ bool TextOptimizer::OptimizePlaneMultiFrame(MapText* pMT, bool bFixScale)
         }
 
         // 更新 MapText 的平面参数（参考帧坐标系）
+        // 先保存旧的世界角点，以防更新失败时恢复
+        std::vector<cv::Mat> oldWorldCorners = pMT->GetWorldCorners();
+        Eigen::Vector4d oldPlaneRef = pMT->GetPlaneRef();
+        
         pMT->SetPlaneRef(Eigen::Vector4d(n_ref_new[0], n_ref_new[1], n_ref_new[2], d_ref_new));
         
         // 强制刷新3D角点
         pMT->UpdateCornersFromPlane();
+        
+        // 验证更新是否成功
+        std::vector<cv::Mat> newWorldCorners = pMT->GetWorldCorners();
+        if (newWorldCorners.size() != 4) {
+            // 更新失败，恢复旧参数
+            std::cout << "[TextOptimizer] Warning: UpdateCornersFromPlane failed, reverting to old parameters." << std::endl;
+            pMT->SetPlaneRef(oldPlaneRef);
+            pMT->SetWorldCorners(oldWorldCorners);
+            return false;
+        }
         
         return true;
     }

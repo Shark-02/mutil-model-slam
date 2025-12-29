@@ -534,10 +534,25 @@ Eigen::Vector4d MapText::GetPlaneRef() const
 
 void MapText::UpdateCornersFromPlane()
 {
-    // 1. 清空当前角点
+    // 1. 保存旧角点（以防重新计算失败时恢复）
+    std::vector<cv::Mat> oldCorners;
+    {
+        std::unique_lock<std::mutex> lock(mMutexFeatures);
+        oldCorners = mWorldCorners;
+    }
+    
+    // 2. 清空当前角点
     ClearWorldCorners();
-    // 2. 触发重新计算 (GetWorldBoundingBox 会在 mWorldCorners 为空时使用 mThetaRef 重新计算)
-    GetWorldBoundingBox();
+    
+    // 3. 触发重新计算 (GetWorldBoundingBox 会在 mWorldCorners 为空时使用 mThetaRef 重新计算)
+    std::vector<cv::Mat> newCorners = GetWorldBoundingBox();
+    
+    // 4. 如果计算失败，恢复旧角点
+    if (newCorners.size() != 4 && oldCorners.size() == 4) {
+        std::unique_lock<std::mutex> lock(mMutexFeatures);
+        mWorldCorners = oldCorners;
+        std::cout << "[MapText::UpdateCornersFromPlane] 恢复旧角点 for MapText " << mnId << std::endl;
+    }
 }
 
 void MapText::SetInlierPoints(const std::vector<cv::Mat>& points)

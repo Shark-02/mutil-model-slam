@@ -2265,6 +2265,15 @@ void Tracking::CreateNewTextLandmarks(KeyFrame* pKF)
         // 检查法向（期望 z 分量朝向相机，z 应为负值）
         if (n_cam.z() > -0.1) continue;
 
+        // 检查平面距离是否合理（d_cam 应该是负值，且绝对值不能太小）
+        // 平面方程：n^T * x + d = 0，对于相机前方的平面，d < 0
+        // |d| 代表平面到相机的最近距离，不应小于 0.1m
+        if (std::abs(d_cam) < 0.1) {
+            std::cerr << "[TextCreate] 警告: 跳过检测 " << i << " (text='" << det->text 
+                      << "'), 平面距离过小 d_cam=" << d_cam << std::endl;
+            continue;
+        }
+
         // 6) 检查 2D四边形(quad) 四角在平面上的射线交点是否在相机前方（并生成世界角点）
         
         std::vector<cv::Point2f> corners_px;
