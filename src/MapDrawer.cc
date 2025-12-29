@@ -31,8 +31,6 @@
 namespace ORB_SLAM2
 {
 
-pangolin::GlFont *text_font = new pangolin::GlFont("/home/shark/VOOM-main-new/fonts/DejaVuSans.ttf", 6.0); //需要先去网上下载字体
-
 MapDrawer::MapDrawer(Map* pMap, const string &strSettingPath):mpMap(pMap)
 {
     cv::FileStorage fSettings(strSettingPath, cv::FileStorage::READ);
@@ -516,7 +514,7 @@ void MapDrawer::DrawTextLandmarks()
             glEnd();
         }
 
-        // ---- 2. 计算中心点 ----
+        // ---- 2. 计算中心点并绘制标识 ----
         Eigen::Vector3d center(0, 0, 0);
         int nPts = bbox3D.size();
         for (int i = 0; i < nPts; i++) {
@@ -525,16 +523,14 @@ void MapDrawer::DrawTextLandmarks()
         }
         center /= static_cast<double>(nPts);
 
-        // ---- 3. 在中心绘制文字 ----
-        const std::string &text = pT->mTextInfo.mean;
-        glColor3f(1.0f, 0.0f, 0.0f); // 红色文字
-        text_font->Text(text).Draw(center.x(), center.y(), center.z());
-
+        // 在中心画一个小点作为标识（不使用字体，避免OpenGL问题）
+        glPointSize(6.0f);
+        glBegin(GL_POINTS);
+        glColor3f(1.0f, 1.0f, 1.0f); // 白色点
+        glVertex3f(center.x(), center.y(), center.z());
+        glEnd();
     }
 }
-
-
-
 
 
 } //namespace ORB_SLAM
