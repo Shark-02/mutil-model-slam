@@ -102,6 +102,17 @@ public:
     TextInfo mTextInfo;
 
     long long mnFirstKFid;  // 记录创建时的关键帧ID
+    
+    // 优化状态追踪 (用于三层防御机制)
+    int mnOptimizationAttempts;      // 优化尝试次数
+    int mnConsecutiveRejections;     // 连续拒绝次数
+    
+    void IncrementOptimizationAttempts() { mnOptimizationAttempts++; }
+    void IncrementRejections() { mnConsecutiveRejections++; }
+    void ResetRejections() { mnConsecutiveRejections = 0; }
+    int GetOptimizationAttempts() const { return mnOptimizationAttempts; }
+    int GetConsecutiveRejections() const { return mnConsecutiveRejections; }
+
     // world corners（每个元素为 3x1 CV_32F 列向量）
     void SetWorldCorners(const std::vector<cv::Mat>& corners_world);
     std::vector<cv::Mat> GetWorldCorners() const;
@@ -153,6 +164,10 @@ protected:
     mutable std::mutex mMutexFeatures;
     std::mutex mMutexPose;
     std::vector<cv::Mat> mWorldCorners; // each cv::Mat is 3x1 CV_32F
+
+private:
+    // 内部辅助函数：根据当前平面参数计算世界角点（不加锁，不打印警告）
+    std::vector<cv::Mat> ComputeCornersFromPlaneInternal();
 };
 
 

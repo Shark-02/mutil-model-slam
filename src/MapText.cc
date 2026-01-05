@@ -12,7 +12,8 @@ MapText::MapText(KeyFrame* pRefKF, const Eigen::Vector4d& theta,
                  const TextInfo& textInfo, Map* pMap)
     : mpRefKF(pRefKF), mThetaRef(theta), mTextInfo(textInfo), mpMap(pMap),
       mState(TEXTIMMATURE), mbBad(false), mpReplaced(static_cast<MapText*>(NULL)),
-      mnVisible(1), mnFound(1)
+      mnVisible(1), mnFound(1),
+      mnOptimizationAttempts(0), mnConsecutiveRejections(0)  // 初始化优化状态追踪
 {
     mnId = nNextId++;
     mnFirstKFid = (pRefKF ? (long long)pRefKF->mnId : -1);
@@ -245,6 +246,71 @@ MapText* MapText::GetReplaced()
  * @brief 计算并返回该文本地标在世界坐标系下的3D包围盒的4个【平面】角点
  * * @return std::vector<cv::Mat> 4个3x1的Mat，每个代表一个角点的世界坐标
  */
+// 内部辅助函数：根据当前平面参数计算世界角点
+// 注意：调用者需要持有 mMutexFeatures 锁
+std::vector<cv::Mat> MapText::ComputeCornersFromPlaneInternal()
+{
+    std::vector<cv::Mat> result;
+    
+    // 检查前置条件
+    if (!mpRefKF || !mObservations.count(mpRefKF)) {
+        return result;
+    }
+    
+    size_t ref_det_idx = mObservations[mpRefKF];
+    if (ref_det_idx >= mpRefKF->vTextDetections.size()) {
+        return result;
+    }
+    
+    const auto& quad_pts = mpRefKF->vTextDetections[ref_det_idx]->quad;
+    if (quad_pts.size() != 4) {
+        return result;
+    }
+    
+    // 获取2D四边形的四个角点 (像素坐标)
+    std::vector<cv::Point2f> corners_2d;
+    corners_2d.reserve(4);
+    for (int i = 0; i < 4; i++) {
+        corners_2d.push_back(cv::Point2f(quad_pts[i].x(), quad_pts[i].y()));
+    }
+    
+    // 将2D角点反投影到参考帧相机坐标系的3D平面上
+    std::vector<cv::Mat> corners_3d_cam;
+    const Eigen::Vector3d n_c = mThetaRef.head<3>();
+    const double d_c = mThetaRef[3];
+    
+    for (const auto& corner : corners_2d) {
+        float u_norm = (corner.x - mpRefKF->cx) / mpRefKF->fx;
+        float v_norm = (corner.y - mpRefKF->cy) / mpRefKF->fy;
+        Eigen::Vector3d ray(u_norm, v_norm, 1.0);
+        
+        double n_dot_ray = n_c.dot(ray);
+        if (std::fabs(n_dot_ray) < 1e-6) continue;
+        
+        double t = -d_c / n_dot_ray;
+        if (t <= 0.02) continue;
+        
+        Eigen::Vector3d p3D_cam_eig = t * ray;
+        corners_3d_cam.push_back((cv::Mat_<float>(3, 1) << p3D_cam_eig.x(), p3D_cam_eig.y(), p3D_cam_eig.z()));
+    }
+    
+    if (corners_3d_cam.size() != 4) {
+        return result;
+    }
+    
+    // 转换到世界坐标系
+    cv::Mat Twc_ref = mpRefKF->GetPoseInverse();
+    cv::Mat Rwc_ref = Twc_ref.rowRange(0, 3).colRange(0, 3);
+    cv::Mat Ow_ref = Twc_ref.rowRange(0, 3).col(3);
+    
+    result.reserve(4);
+    for (const auto& p_cam : corners_3d_cam) {
+        result.push_back(Rwc_ref * p_cam + Ow_ref);
+    }
+    
+    return result;
+}
+
 std::vector<cv::Mat> MapText::GetWorldBoundingBox()
 {
     std::unique_lock<std::mutex> lock(mMutexFeatures);
@@ -254,89 +320,20 @@ std::vector<cv::Mat> MapText::GetWorldBoundingBox()
         return mWorldCorners;
     }
 
-    // 回退逻辑
-    //    (如果 mWorldCorners 为空, e.g. 从旧地图加载)
+    // 回退逻辑 (如果 mWorldCorners 为空, e.g. 从旧地图加载)
     std::cout << "[GetWorldBoundingBox] 警告: MapText " << mnId 
-              << " 缺少 mWorldCorners, 正在从RefKF回退计算 (4-point planar)..." << std::endl;
-              
-    std::vector<cv::Mat> bbox3D_world;
-
-    // 从参考关键帧获取原始的2D检测四边形 (quad)
-    if (!mObservations.count(mpRefKF)) {
-        std::cerr << "[GetWorldBoundingBox] Fallback失败: MapText " << mnId << " 没有参考帧." << std::endl;
-        return bbox3D_world; // 如果没有参考帧的观测信息，则无法计算
-    }
-
-    size_t ref_det_idx = mObservations[mpRefKF];
-    if (ref_det_idx >= mpRefKF->vTextDetections.size()) {
-        std::cerr << "[GetWorldBoundingBox] Fallback失败: MapText " << mnId << " 在RefKF中的索引 " 
-                  << ref_det_idx << " 超出范围." << std::endl;
-        return bbox3D_world;
-    }
-
-    const auto& quad_pts = mpRefKF->vTextDetections[ref_det_idx]->quad;
-    if (quad_pts.size() != 4) {
+              << " 缺少 mWorldCorners, 正在从RefKF回退计算..." << std::endl;
+    
+    std::vector<cv::Mat> computed = ComputeCornersFromPlaneInternal();
+    
+    if (computed.size() == 4) {
+        mWorldCorners = computed;  // 缓存结果
+        return mWorldCorners;
+    } else {
         std::cerr << "[GetWorldBoundingBox] Fallback失败: MapText " << mnId 
-                  << " 在RefKF中的检测没有4个quad角点." << std::endl;
-        return bbox3D_world;
+                  << " 计算角点失败." << std::endl;
+        return computed;  // 返回空
     }
-
-    // 获取2D四边形的四个角点 (像素坐标)
-    std::vector<cv::Point2f> corners_2d;
-    corners_2d.reserve(4);
-    corners_2d.push_back(cv::Point2f(quad_pts[0].x(), quad_pts[0].y()));
-    corners_2d.push_back(cv::Point2f(quad_pts[1].x(), quad_pts[1].y()));
-    corners_2d.push_back(cv::Point2f(quad_pts[2].x(), quad_pts[2].y()));
-    corners_2d.push_back(cv::Point2f(quad_pts[3].x(), quad_pts[3].y()));
-
-    // 将2D角点反投影到参考帧相机坐标系的3D平面上
-    std::vector<cv::Mat> corners_3d_cam; // 存储4个相机系角点
-    const Eigen::Vector3d n_c = mThetaRef.head<3>(); // 平面法向量 (相机坐标系)
-    const double d_c = mThetaRef[3];               // 平面距离 (相机坐标系)
-
-    for (const auto& corner : corners_2d)
-    {
-        // 将2D像素坐标转换为归一化图像坐标
-        float u_norm = (corner.x - mpRefKF->cx) / mpRefKF->fx;
-        float v_norm = (corner.y - mpRefKF->cy) / mpRefKF->fy;
-        Eigen::Vector3d ray(u_norm, v_norm, 1.0);
-        // ray 不需要归一化, 因为 t = -d_c / n_c.dot(ray) 会自动缩放
-        // 使得 (t * ray) 的 z 坐标正确。
-
-        // 射线与平面求交: n_c^T * (t * ray) + d_c = 0  => t * (n_c.dot(ray)) = -d_c
-        double n_dot_ray = n_c.dot(ray);
-        if (std::fabs(n_dot_ray) < 1e-6) continue; // 射线与平面平行
-
-        double t = -d_c / n_dot_ray;
-        
-        // 检查深度是否在合理范围内 (例如，防止点在相机后面)
-        if (t <= 0.02) continue; 
-        
-        Eigen::Vector3d p3D_cam_eig = t * ray;
-        
-        corners_3d_cam.push_back((cv::Mat_<float>(3, 1) << p3D_cam_eig.x(), p3D_cam_eig.y(), p3D_cam_eig.z()));
-    }
-    
-    if (corners_3d_cam.size() != 4) {
-        std::cerr << "[GetWorldBoundingBox] Fallback失败: MapText " << mnId 
-                  << " 射线-平面相交失败 (仅 " << corners_3d_cam.size() << " 个有效角点)." << std::endl;
-        return bbox3D_world; // 必须要有4个角点
-    }
-
-    // 将包围盒的【4个平面角点】从参考帧相机坐标系转换到世界坐标系
-    cv::Mat Twc_ref = mpRefKF->GetPoseInverse();
-    cv::Mat Rwc_ref = Twc_ref.rowRange(0, 3).colRange(0, 3);
-    cv::Mat Ow_ref = Twc_ref.rowRange(0, 3).col(3); // Ow_ref 就是 t_wc
-
-    bbox3D_world.reserve(4);
-    for (const auto& p_cam : corners_3d_cam) {
-        bbox3D_world.push_back(Rwc_ref * p_cam + Ow_ref);
-    }
-    
-    // 缓存mWorldCorners
-    mWorldCorners = bbox3D_world;
-    
-    return bbox3D_world;
 }
 
 std::vector<cv::Point2f> MapText::ProjectByHomography(const Frame& F)
@@ -534,24 +531,26 @@ Eigen::Vector4d MapText::GetPlaneRef() const
 
 void MapText::UpdateCornersFromPlane()
 {
+    std::unique_lock<std::mutex> lock(mMutexFeatures);
+    
     // 1. 保存旧角点（以防重新计算失败时恢复）
-    std::vector<cv::Mat> oldCorners;
-    {
-        std::unique_lock<std::mutex> lock(mMutexFeatures);
-        oldCorners = mWorldCorners;
-    }
+    std::vector<cv::Mat> oldCorners = mWorldCorners;
     
     // 2. 清空当前角点
-    ClearWorldCorners();
+    mWorldCorners.clear();
     
-    // 3. 触发重新计算 (GetWorldBoundingBox 会在 mWorldCorners 为空时使用 mThetaRef 重新计算)
-    std::vector<cv::Mat> newCorners = GetWorldBoundingBox();
+    // 3. 调用内部函数计算新角点（不打印警告）
+    std::vector<cv::Mat> newCorners = ComputeCornersFromPlaneInternal();
     
-    // 4. 如果计算失败，恢复旧角点
-    if (newCorners.size() != 4 && oldCorners.size() == 4) {
-        std::unique_lock<std::mutex> lock(mMutexFeatures);
+    // 4. 更新或恢复角点
+    if (newCorners.size() == 4) {
+        mWorldCorners = newCorners;
+        // 成功时不打印，减少日志噪音
+    } else if (oldCorners.size() == 4) {
         mWorldCorners = oldCorners;
-        std::cout << "[MapText::UpdateCornersFromPlane] 恢复旧角点 for MapText " << mnId << std::endl;
+        std::cout << "[MapText::UpdateCornersFromPlane] 计算失败，恢复旧角点 for MapText " << mnId << std::endl;
+    } else {
+        std::cout << "[MapText::UpdateCornersFromPlane] 计算失败，无旧角点可恢复 for MapText " << mnId << std::endl;
     }
 }
 

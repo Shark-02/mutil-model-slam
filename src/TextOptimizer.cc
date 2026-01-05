@@ -132,6 +132,17 @@ bool TextOptimizer::OptimizePlaneMultiFrame(MapText* pMT, bool bFixScale)
     std::vector<cv::Mat> inliers_ref = pMT->GetInlierPoints();
     int nPointEdges = static_cast<int>(inliers_ref.size());
     
+    // 计算点云内点到初始平面的平均距离，用于验证内点质量
+    double avgDist = 0.0;
+    for (const auto& pt_mat : inliers_ref) {
+        Eigen::Vector3d p(pt_mat.at<float>(0), pt_mat.at<float>(1), pt_mat.at<float>(2));
+        double dist = std::abs(n_ref.dot(p) + d_ref);
+        avgDist += dist;
+    }
+    if (nPointEdges > 0) avgDist /= nPointEdges;
+    std::cout << "[TextOptimizer] Inlier quality: " << nPointEdges << " points, avg dist to plane = " 
+              << avgDist << " m" << std::endl;
+    
     // 计算图像对角线长度，用于归一化视觉残差
     double imgDiag = std::sqrt(pRefKF->mnMaxX * pRefKF->mnMaxX + pRefKF->mnMaxY * pRefKF->mnMaxY);
     if (imgDiag < 100.0) imgDiag = 640.0;  // 默认值
@@ -195,9 +206,16 @@ bool TextOptimizer::OptimizePlaneMultiFrame(MapText* pMT, bool bFixScale)
     double chi2_stage1_after = optimizer1.activeChi2();
     Eigen::Vector3d theta_stage1 = vTheta1->estimate();
 
+    // 计算 Stage1 后的 d 值，用于验证
+    Eigen::Vector3d n_stage1;
+    double d_stage1;
+    ThetaToPlane(theta_stage1, n_stage1, d_stage1);
+    if (n_ref.dot(n_stage1) < 0) d_stage1 = -d_stage1;  // 保持符号一致
+    
     std::cout << "[TextOptimizer] Stage1 (point cloud only): Chi2 " 
               << chi2_stage1_before << " -> " << chi2_stage1_after
-              << " | theta=(" << theta_stage1.transpose() << ")" << std::endl;
+              << " | theta=(" << theta_stage1.transpose() << ")"
+              << " | d_stage1=" << d_stage1 << " (init=" << d_ref << ")" << std::endl;
 
     // =========================================================================
     // Stage 2: 点云 + 视觉约束（视觉权重极低且归一化）
@@ -334,12 +352,27 @@ bool TextOptimizer::OptimizePlaneMultiFrame(MapText* pMT, bool bFixScale)
     }
 
     // =========================================================================
-    // 检查优化结果的有效性
+    // 检查优化结果的有效性 (三层防御机制)
     // =========================================================================
     bool isPhysicallyValid = true;
+    bool largeChangeButImproved = false;  // 标记：大跳变但误差显著下降
+    
+    // 获取优化尝试次数，用于渐进式放宽阈值
+    int nOptAttempts = pMT->GetOptimizationAttempts();
+    pMT->IncrementOptimizationAttempts();  // 记录本次尝试
+    
+    // ===== 第一层：渐进式放宽阈值 =====
+    // 首次严格，之后逐步放宽，给初始化不好的地标多次机会
+    double ratio_threshold_low, ratio_threshold_high;
+    if (nOptAttempts == 0) {
+        ratio_threshold_low = 0.3; ratio_threshold_high = 3.0;   // 首次严格
+    } else if (nOptAttempts <= 2) {
+        ratio_threshold_low = 0.2; ratio_threshold_high = 5.0;   // 第2-3次放宽
+    } else {
+        ratio_threshold_low = 0.1; ratio_threshold_high = 10.0;  // 之后更宽松
+    }
     
     // 1. 平面不能离相机太近（防止穿过相机）
-    //    提高阈值到 0.1m，因为太近的平面会导致射线-平面相交失败
     if (std::abs(d_ref_new) < 0.1) {
         std::cout << "[TextOptimizer] Warning: plane too close to camera, d=" << d_ref_new << std::endl;
         isPhysicallyValid = false;
@@ -351,7 +384,17 @@ bool TextOptimizer::OptimizePlaneMultiFrame(MapText* pMT, bool bFixScale)
         isPhysicallyValid = false;
     }
     
-    // 3. 法向变化不能太大（防止平面翻转）
+    // 3. 物理约束：平面应该在相机前方
+    //    法向量 n_z 和 d 的符号关系决定平面位置
+    //    如果 n_z > 0 且 d > 0，或 n_z < 0 且 d < 0，平面在相机后方
+    bool planeInFront = (n_ref_new.z() * d_ref_new <= 0) || std::abs(n_ref_new.z()) < 0.1;
+    if (!planeInFront) {
+        std::cout << "[TextOptimizer] Warning: plane may be behind camera, n_z=" 
+                  << n_ref_new.z() << " d=" << d_ref_new << std::endl;
+        // 不直接拒绝，因为某些倾斜平面可能触发这个条件
+    }
+    
+    // 4. 法向变化不能太大（防止平面翻转）
     double cos_angle = 1.0;
     if (n_ref.norm() > 1e-6) {
         cos_angle = n_ref.dot(n_ref_new);
@@ -361,22 +404,58 @@ bool TextOptimizer::OptimizePlaneMultiFrame(MapText* pMT, bool bFixScale)
         isPhysicallyValid = false;
     }
     
-    // 4. 距离变化不能太大（防止优化发散）
-    //    d 从 -1.337 变到 0.075 是明显的发散
+    // 5. 距离变化检查（使用渐进式阈值）
     double d_change_ratio = std::abs(d_ref_new / d_ref);
-    if (d_change_ratio < 0.3 || d_change_ratio > 3.0) {
-        std::cout << "[TextOptimizer] Warning: d changed too much, ratio=" << d_change_ratio 
-                  << " (d: " << d_ref << " -> " << d_ref_new << ")" << std::endl;
-        isPhysicallyValid = false;
+    bool largeChange = (d_change_ratio < ratio_threshold_low || d_change_ratio > ratio_threshold_high);
+    
+    if (largeChange) {
+        std::cout << "[TextOptimizer] Notice: d changed significantly, ratio=" << d_change_ratio 
+                  << " (d: " << d_ref << " -> " << d_ref_new << ")"
+                  << " threshold=[" << ratio_threshold_low << ", " << ratio_threshold_high << "]"
+                  << " (attempt #" << nOptAttempts << ")" << std::endl;
+        
+        // ===== 第二层：Chi2 显著下降时的特殊通道 =====
+        // 关键：使用 Stage1（纯点云）的 Chi2 来判断，因为点云约束更可靠
+        double chi2_drop_ratio = chi2_stage1_after / std::max(chi2_stage1_before, 1e-6);
+        bool stage1_improved_significantly = (chi2_drop_ratio < 0.4);  // Chi2 降到 40% 以下
+        
+        if (stage1_improved_significantly) {
+            std::cout << "[TextOptimizer] >>> Accepting large change: Stage1 Chi2 dropped to " 
+                      << (chi2_drop_ratio * 100) << "% (" << chi2_stage1_before << " -> " 
+                      << chi2_stage1_after << ")" << std::endl;
+            largeChangeButImproved = true;
+            // 不设置 isPhysicallyValid = false
+        } else {
+            std::cout << "[TextOptimizer] Warning: large change rejected, Stage1 Chi2 ratio=" 
+                      << chi2_drop_ratio << " (need < 0.4)" << std::endl;
+            isPhysicallyValid = false;
+        }
     }
 
-    bool accept = (chi2_after <= chi2_before) && isPhysicallyValid;
+    bool accept = (chi2_after <= chi2_before) && (isPhysicallyValid || largeChangeButImproved);
+    
+    // 额外检查：Stage2 相对 Stage1 的 d 变化（检测视觉约束是否过度影响）
+    double d_stage2_drift = std::abs(d_ref_new - d_stage1) / std::max(std::abs(d_stage1), 0.1);
+    if (d_stage2_drift > 0.2) {  // Stage2 导致 d 变化超过 20%
+        std::cout << "[TextOptimizer] Warning: Stage2 caused " << (d_stage2_drift*100) 
+                  << "% drift in d (stage1=" << d_stage1 << " -> final=" << d_ref_new << ")" << std::endl;
+    }
 
     std::cout << "[TextOptimizer] MapText " << pMT->mnId 
               << " | Stage2 Chi2: " << chi2_before << " -> " << chi2_after
               << " | n_new=(" << n_ref_new.transpose() << ") d_new=" << d_ref_new
               << " | Valid: " << isPhysicallyValid
+              << " | LargeButImproved: " << largeChangeButImproved
               << " | Accept: " << accept << std::endl;
+
+    // 更新连续拒绝计数器
+    if (!accept) {
+        pMT->IncrementRejections();
+        std::cout << "[TextOptimizer] MapText " << pMT->mnId 
+                  << " consecutive rejections: " << pMT->GetConsecutiveRejections() << std::endl;
+    } else {
+        pMT->ResetRejections();  // 接受后重置计数器
+    }
 
     if (accept)
     {

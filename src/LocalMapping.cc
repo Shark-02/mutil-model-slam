@@ -391,6 +391,7 @@ void LocalMapping::TextStatusUpdate()
             }
 
             // ---------- 剔除逻辑 ----------
+            // 原有条件：超龄且观测不足
             if (nAge >= maxAgeForCulling && nObs < minObsForGood)
             {
                 pMT->SetBadFlag();
@@ -398,6 +399,23 @@ void LocalMapping::TextStatusUpdate()
                 std::cout << "[LocalMapping] MapText " << pMT->mnId
                           << " ('" << pMT->GetText()
                           << "') culled (IMMATURE, few obs)." << std::endl;
+                continue;
+            }
+            
+            // ===== 第三层：僵尸清除机制 =====
+            // 连续多次被优化器拒绝 + 存活时间较长 → 确定是死锁，强制清除
+            const int maxConsecutiveRejections = 5;  // 连续 5 次被拒绝
+            const int minAgeForZombieCulling = 15;   // 至少存活 15 帧
+            
+            int nRejections = pMT->GetConsecutiveRejections();
+            if (nRejections >= maxConsecutiveRejections && nAge >= minAgeForZombieCulling)
+            {
+                pMT->SetBadFlag();
+                lit = mlpRecentAddedMapTexts.erase(lit);
+                std::cout << "[LocalMapping] MapText " << pMT->mnId
+                          << " ('" << pMT->GetText()
+                          << "') culled as ZOMBIE (" << nRejections 
+                          << " consecutive rejections, age=" << nAge << ")" << std::endl;
                 continue;
             }
         }
