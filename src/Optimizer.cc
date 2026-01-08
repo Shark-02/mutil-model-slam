@@ -1301,11 +1301,27 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
     }
 
 
+    // ========== LBA 文本优化统计 ==========
+    int nTextVertices = mtToVertexId.size();
+    int nTextEdges = vpEdgesText.size();
+    std::cout << "\n[LBA-Text] ========== 文本优化开始 =========="
+              << "\n[LBA-Text] 参与优化的文本地标数: " << nTextVertices
+              << "\n[LBA-Text] 文本边数量: " << nTextEdges << " (每个角点一条边)"
+              << "\n[LBA-Text] 文本权重 textInfoScale: " << textInfoScale << std::endl;
+
     if(pbStopFlag)
         if(*pbStopFlag)
             return;
 
     optimizer.initializeOptimization();
+    
+    // 记录优化前的 chi2
+    optimizer.computeActiveErrors();
+    double chi2_text_before = 0.0;
+    for(auto* e : vpEdgesText) {
+        chi2_text_before += e->chi2();
+    }
+    
     optimizer.optimize(5);
 
 
@@ -1352,10 +1368,14 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
     }
     
     // 检查文本边异常值（使用更宽松的阈值）
+    int nTextOutliers = 0;
+    double chi2_text_stage1 = 0.0;
     for(size_t i=0, iend=vpEdgesText.size(); i<iend; i++)
     {
         EdgeHomographyProjectBinary* e = vpEdgesText[i];
         MapText* pMT = vpMapTextEdge[i];
+        
+        chi2_text_stage1 += e->chi2();
         
         if(pMT->isBad())
             continue;
@@ -1364,15 +1384,28 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
         if(e->chi2() > 15.0)
         {
             e->setLevel(1);
+            nTextOutliers++;
         }
         
         e->setRobustKernel(0);
     }
+    
+    std::cout << "[LBA-Text] Stage1 完成: chi2 " << chi2_text_before << " -> " << chi2_text_stage1
+              << " | 文本异常边: " << nTextOutliers << "/" << vpEdgesText.size() << std::endl;
 
     // Optimize again without the outliers
 
     optimizer.initializeOptimization(0);
     optimizer.optimize(10);
+    
+    // 记录 Stage2 后的 chi2
+    double chi2_text_stage2 = 0.0;
+    for(auto* e : vpEdgesText) {
+        if(e->level() == 0) {
+            chi2_text_stage2 += e->chi2();
+        }
+    }
+    std::cout << "[LBA-Text] Stage2 完成: chi2 -> " << chi2_text_stage2 << std::endl;
 
     }
 
@@ -1447,6 +1480,8 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
     // ========== 新增：恢复优化后的文本平面参数 ==========
     // 使用 TextOptimizer::ThetaToPlane 从 θ 恢复 (n, d)，然后做符号校正
     // 关键修复：如果参考帧在本次 LBA 中被优化了，需要用姿态增量重新表达 θ
+    int nTextUpdated = 0, nTextSkipped = 0, nPoseIncrementApplied = 0, nCornerUpdateFailed = 0;
+    
     for(auto pMT : lLocalMapTexts)
     {
         if(pMT->isBad()) continue;
@@ -1463,6 +1498,9 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
             // 检查 θ 的模长是否有效（太小表示平面太远，太大表示平面太近）
             if(theta_norm < 1e-6 || theta_norm > 100.0)
             {
+                nTextSkipped++;
+                std::cout << "[LBA-Text] 跳过 MapText " << pMT->mnId 
+                          << ": theta_norm=" << theta_norm << " 异常" << std::endl;
                 continue;  // 跳过异常情况，保留原始平面参数
             }
             
@@ -1505,14 +1543,31 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
                     Eigen::Matrix3d R_new_old = T_new_old.block<3,3>(0,0);
                     Eigen::Vector3d t_new_old = T_new_old.block<3,1>(0,3);
                     
+                    // 计算位姿增量的大小（用于日志）
+                    double delta_t = t_new_old.norm();
+                    Eigen::AngleAxisd aa(R_new_old);
+                    double delta_r_deg = aa.angle() * 180.0 / M_PI;
+                    
                     // 平面变换规则（从旧参考系到新参考系）：
                     // n_new = R_new_old * n_old
                     // d_new = d_old - n_new.dot(t_new_old)
+                    Eigen::Vector3d n_before = new_n;
+                    double d_before = new_d;
+                    
                     Eigen::Vector3d n_transformed = R_new_old * new_n;
                     double d_transformed = new_d - n_transformed.dot(t_new_old);
                     
                     new_n = n_transformed;
                     new_d = d_transformed;
+                    
+                    nPoseIncrementApplied++;
+                    if(delta_t > 0.001 || delta_r_deg > 0.1) {
+                        std::cout << "[LBA-Text] MapText " << pMT->mnId 
+                                  << " 参考帧KF" << pRefKF->mnId << " 位姿被优化"
+                                  << " | delta_t=" << delta_t*1000 << "mm"
+                                  << " delta_r=" << delta_r_deg << "deg"
+                                  << " | d: " << d_before << "->" << new_d << std::endl;
+                    }
                 }
             }
             
@@ -1524,9 +1579,24 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
             pMT->SetPlaneRef(newPlaneRef);
             
             // 根据新的平面参数更新世界角点
+            std::vector<cv::Mat> oldCorners = pMT->GetWorldCorners();
             pMT->UpdateCornersFromPlane();
+            std::vector<cv::Mat> newCorners = pMT->GetWorldCorners();
+            
+            if(newCorners.size() != 4) {
+                nCornerUpdateFailed++;
+            }
+            
+            nTextUpdated++;
         }
     }
+    
+    // 输出文本优化总结
+    std::cout << "[LBA-Text] ========== 文本优化完成 =========="
+              << "\n[LBA-Text] 更新成功: " << nTextUpdated << " | 跳过: " << nTextSkipped
+              << "\n[LBA-Text] 姿态增量校正次数: " << nPoseIncrementApplied
+              << "\n[LBA-Text] 角点更新失败: " << nCornerUpdateFailed
+              << "\n[LBA-Text] ==================================\n" << std::endl;
 
 }
 
