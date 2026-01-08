@@ -26,6 +26,7 @@
 #include "KeyFrame.h"
 #include "LoopClosing.h"
 #include "Frame.h"
+#include "Tracking.h"
 
 #include "Thirdparty/g2o/g2o/types/types_seven_dof_expmap.h"
 
@@ -57,7 +58,8 @@ public:
                                  const bool bRobust = true);
     void static GlobalBundleAdjustemnt(Map* pMap, int nIterations=5, bool *pbStopFlag=NULL,
                                        const unsigned long nLoopKF=0, const bool bRobust = true);
-    void static LocalBundleAdjustment(KeyFrame* pKF, bool *pbStopFlag, Map *pMap);
+    void static LocalBundleAdjustment(KeyFrame* pKF, bool *pbStopFlag, Map *pMap, 
+                                       Tracking* pTracker = nullptr);  // 新增：用于访问 AdaptiveWeightManager
     
     // 原始版本（向后兼容）
     int static PoseOptimization(Frame* pFrame);

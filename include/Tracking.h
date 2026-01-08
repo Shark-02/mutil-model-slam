@@ -88,6 +88,11 @@ public:
         return mpSystem;
     }
 
+    // 获取自适应权重管理器（供 LocalMapping 访问）
+    AdaptiveWeightManager* GetAdaptiveWeightManager() const {
+        return mpAdaptiveWeightManager;
+    }
+
 
 public:
 

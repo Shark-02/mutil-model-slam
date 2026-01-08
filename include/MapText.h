@@ -103,6 +103,10 @@ public:
 
     long long mnFirstKFid;  // 记录创建时的关键帧ID
     
+    // LocalBundleAdjustment 标记（避免重复处理）
+    long unsigned int mnBALocalForKF;   // 标记参与本次 LBA 的 KF ID
+    long unsigned int mnBAFixedForKF;   // 标记为固定顶点的 KF ID
+    
     // 优化状态追踪 (用于三层防御机制)
     int mnOptimizationAttempts;      // 优化尝试次数
     int mnConsecutiveRejections;     // 连续拒绝次数

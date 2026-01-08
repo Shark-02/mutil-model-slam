@@ -94,7 +94,7 @@ void LocalMapping::Run()
                 //std::cout<<"lm3"<<std::endl;
                 // Local BA
                 if(mpMap->KeyFramesInMap()>2)
-                    Optimizer::LocalBundleAdjustment(mpCurrentKeyFrame,&mbAbortBA, mpMap);
+                    Optimizer::LocalBundleAdjustment(mpCurrentKeyFrame,&mbAbortBA, mpMap, mpTracker);
                 //std::cout<<"lm4"<<std::endl;
                 // Check redundant local Keyframes
                 KeyFrameCulling();

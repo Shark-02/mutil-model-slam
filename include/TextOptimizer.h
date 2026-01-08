@@ -24,6 +24,7 @@
 #include "Thirdparty/g2o/g2o/core/optimization_algorithm_levenberg.h"
 #include "Thirdparty/g2o/g2o/solvers/linear_solver_dense.h"
 #include "Thirdparty/g2o/g2o/core/robust_kernel_impl.h"
+#include "Thirdparty/g2o/g2o/types/types_six_dof_expmap.h"
 
 namespace ORB_SLAM2
 {
@@ -151,6 +152,100 @@ private:
     Eigen::Matrix3d R_rel_;
     Eigen::Vector3d t_rel_;
     Eigen::Matrix3d K_;
+};
+
+// ============================================================================
+// g2o 边：基于单应性的角点重投影误差 (二元边 - LBA专用)
+// 连接：VertexSE3Expmap (相机位姿) 和 VertexTheta3D (文本平面)
+// 公式：H = K_j * (R_ji + t_ji * θ^T) * K_i^{-1}
+// 这是紧耦合优化的关键：同时优化相机位姿和文本平面参数
+// ============================================================================
+class EdgeHomographyProjectBinary : public g2o::BaseBinaryEdge<2, Eigen::Vector2d, 
+                                                                g2o::VertexSE3Expmap,  // 当前帧相机位姿
+                                                                VertexTheta3D>          // 文本平面参数
+{
+public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+
+    EdgeHomographyProjectBinary() {}
+
+    /**
+     * @brief 设置固定参数
+     * @param ray_ref       参考帧中角点的归一化射线 (u-cx)/fx, (v-cy)/fy
+     * @param T_iw          参考帧的世界到相机变换 (4x4)
+     * @param K_j           当前观测帧的内参矩阵
+     */
+    void setParams(const Eigen::Vector2d& ray_ref,
+                   const Eigen::Matrix4d& T_iw,
+                   const Eigen::Matrix3d& K_j)
+    {
+        ray_ref_ = ray_ref;
+        T_iw_ = T_iw;
+        K_j_ = K_j;
+        
+        // 预计算参考帧的旋转和平移
+        R_iw_ = T_iw_.block<3,3>(0,0);
+        t_iw_ = T_iw_.block<3,1>(0,3);
+    }
+
+    virtual void computeError() override {
+        // 获取优化变量
+        const g2o::VertexSE3Expmap* vPoseJ = static_cast<const g2o::VertexSE3Expmap*>(_vertices[0]);
+        const VertexTheta3D* vTheta = static_cast<const VertexTheta3D*>(_vertices[1]);
+        
+        // 当前帧位姿 T_jw
+        g2o::SE3Quat SE3_jw = vPoseJ->estimate();
+        Eigen::Matrix3d R_jw = SE3_jw.rotation().toRotationMatrix();
+        Eigen::Vector3d t_jw = SE3_jw.translation();
+        
+        // 文本平面参数 θ = -n/d (参考帧坐标系)
+        Eigen::Vector3d theta_i = vTheta->estimate();
+        
+        // ========================================================================
+        // 计算相对变换：从参考帧 i 到当前帧 j
+        // T_ji = T_jw * T_wi = T_jw * T_iw^{-1}
+        // R_ji = R_jw * R_iw^T
+        // t_ji = t_jw - R_ji * t_iw = t_jw - R_jw * R_iw^T * t_iw
+        // ========================================================================
+        Eigen::Matrix3d R_ji = R_jw * R_iw_.transpose();
+        Eigen::Vector3d t_ji = t_jw - R_ji * t_iw_;
+        
+        // ========================================================================
+        // 单应性矩阵：H = R_ji + t_ji * θ^T (参考帧坐标系下的 θ)
+        // 注意：θ 是在参考帧坐标系下定义的，所以直接用 R_ji 和 t_ji
+        // ========================================================================
+        Eigen::Matrix3d H = R_ji + t_ji * theta_i.transpose();
+        
+        // 参考帧中的射线（归一化坐标）
+        Eigen::Vector3d ray_3d(ray_ref_[0], ray_ref_[1], 1.0);
+        
+        // 通过单应性矩阵投影到当前帧的归一化相机坐标系
+        Eigen::Vector3d p_cam_j = H * ray_3d;
+        
+        // 检查投影点是否在相机前方
+        if (p_cam_j[2] <= 0.01) {
+            _error = Eigen::Vector2d(1e6, 1e6);
+            return;
+        }
+        
+        // 投影到像素坐标
+        double inv_z = 1.0 / p_cam_j[2];
+        double u = K_j_(0,0) * p_cam_j[0] * inv_z + K_j_(0,2);
+        double v = K_j_(1,1) * p_cam_j[1] * inv_z + K_j_(1,2);
+        
+        // 计算重投影误差
+        _error = Eigen::Vector2d(u, v) - _measurement;
+    }
+
+    virtual bool read(std::istream& in) override { return true; }
+    virtual bool write(std::ostream& out) const override { return true; }
+
+private:
+    Eigen::Vector2d ray_ref_;       // 参考帧归一化射线
+    Eigen::Matrix4d T_iw_;          // 参考帧位姿 (world to camera)
+    Eigen::Matrix3d R_iw_;          // 预计算的旋转
+    Eigen::Vector3d t_iw_;          // 预计算的平移
+    Eigen::Matrix3d K_j_;           // 当前帧内参
 };
 
 // ============================================================================

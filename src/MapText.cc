@@ -13,7 +13,8 @@ MapText::MapText(KeyFrame* pRefKF, const Eigen::Vector4d& theta,
     : mpRefKF(pRefKF), mThetaRef(theta), mTextInfo(textInfo), mpMap(pMap),
       mState(TEXTIMMATURE), mbBad(false), mpReplaced(static_cast<MapText*>(NULL)),
       mnVisible(1), mnFound(1),
-      mnOptimizationAttempts(0), mnConsecutiveRejections(0)  // 初始化优化状态追踪
+      mnOptimizationAttempts(0), mnConsecutiveRejections(0),  // 初始化优化状态追踪
+      mnBALocalForKF(0), mnBAFixedForKF(0)  // 初始化 BA 标记
 {
     mnId = nNextId++;
     mnFirstKFid = (pRefKF ? (long long)pRefKF->mnId : -1);
@@ -46,9 +47,11 @@ Eigen::Vector4d MapText::GetWorldPlane()
         return theta_w;
     }
     if (fabs(n_norm - 1.0) > 1e-6) {
-        n_c.normalize();
-        // adjust d_c accordingly if you had scaled normal previously:
-        // If original mThetaRef stored non-unit normal, scale d as well (comment only if needed).
+        // 如果法向量不是单位向量，需要同时缩放 n 和 d
+        // 原始平面方程：n·x + d = 0
+        // 归一化后：(n/||n||)·x + (d/||n||) = 0
+        n_c /= n_norm;
+        d_c /= n_norm;
     }
 
     Eigen::Vector3d n_w = R_wc * n_c;
@@ -347,10 +350,10 @@ std::vector<cv::Point2f> MapText::ProjectByHomography(const Frame& F)
     // 参考帧 bbox 四角点
     const auto& det_bbox = mpRefKF->vTextDetections[ref_det_idx]->bbox;
     std::vector<cv::Point2f> corners_ref = {
-        {det_bbox[0], det_bbox[1]},
-        {det_bbox[2], det_bbox[1]},
-        {det_bbox[2], det_bbox[3]},
-        {det_bbox[0], det_bbox[3]}
+        {static_cast<float>(det_bbox[0]), static_cast<float>(det_bbox[1])},
+        {static_cast<float>(det_bbox[2]), static_cast<float>(det_bbox[1])},
+        {static_cast<float>(det_bbox[2]), static_cast<float>(det_bbox[3])},
+        {static_cast<float>(det_bbox[0]), static_cast<float>(det_bbox[3])}
     };
 
     // 相机位姿

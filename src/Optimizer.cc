@@ -32,6 +32,9 @@
 
 #include "Converter.h"
 #include "OptimizerObject.h"
+#include "MapText.h"
+#include "TextOptimizer.h"
+#include "AdaptiveWeightManager.h"
 
 #include<mutex>
 
@@ -913,8 +916,20 @@ int Optimizer::PoseOptimization(Frame *pFrame, const OptimizationWeights& weight
     return nInitialCorrespondences-nBad;
 }
 
-void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap)
+void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap, Tracking* pTracker)
 {    
+    // ========== 0. 获取自适应权重 ==========
+    double textInfoScale = 0.01;    // 默认值
+    double objectInfoScale = 0.01;
+    double pointInfoScale = 1.0;
+    
+    if (pTracker && pTracker->GetAdaptiveWeightManager()) {
+        ModalityWeights weights = pTracker->GetAdaptiveWeightManager()->GetCurrentWeights();
+        textInfoScale = weights.textInfoScale;
+        objectInfoScale = weights.objectInfoScale;
+        pointInfoScale = weights.pointInfoScale;
+    }
+    
     // Local KeyFrames: First Breath Search from Current Keyframe
     list<KeyFrame*> lLocalKeyFrames;
 
@@ -948,6 +963,23 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
         }
     }
 
+    // ========== 新增：收集 Local MapTexts (只要 TEXTGOOD 状态) ==========
+    list<MapText*> lLocalMapTexts;
+    for(list<KeyFrame*>::iterator lit=lLocalKeyFrames.begin(), lend=lLocalKeyFrames.end(); lit!=lend; lit++)
+    {
+        vector<MapText*> vpMTs = (*lit)->GetMapTextMatches();
+        for(auto pMT : vpMTs)
+        {
+            if(pMT && !pMT->isBad() && 
+               pMT->GetState() == TEXTGOOD &&  // 只取 GOOD 状态
+               pMT->mnBALocalForKF != pKF->mnId)
+            {
+                lLocalMapTexts.push_back(pMT);
+                pMT->mnBALocalForKF = pKF->mnId;
+            }
+        }
+    }
+
     // Fixed Keyframes. Keyframes that see Local MapPoints but that are not Local Keyframes
     list<KeyFrame*> lFixedCameras;
     for(list<MapPoint*>::iterator lit=lLocalMapPoints.begin(), lend=lLocalMapPoints.end(); lit!=lend; lit++)
@@ -960,6 +992,22 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
             if(pKFi->mnBALocalForKF!=pKF->mnId && pKFi->mnBAFixedForKF!=pKF->mnId)
             {                
                 pKFi->mnBAFixedForKF=pKF->mnId;
+                if(!pKFi->isBad())
+                    lFixedCameras.push_back(pKFi);
+            }
+        }
+    }
+    
+    // 同时处理 MapTexts 的观测 KF (确保文本观测帧也被加入固定相机)
+    for(auto pMT : lLocalMapTexts)
+    {
+        map<KeyFrame*, size_t> observations = pMT->GetObservations();
+        for(auto& obs : observations)
+        {
+            KeyFrame* pKFi = obs.first;
+            if(pKFi->mnBALocalForKF != pKF->mnId && pKFi->mnBAFixedForKF != pKF->mnId)
+            {
+                pKFi->mnBAFixedForKF = pKF->mnId;
                 if(!pKFi->isBad())
                     lFixedCameras.push_back(pKFi);
             }
@@ -1118,6 +1166,140 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
         }
     }
 
+    // ========== 新增：添加 MapText 顶点和二元边 ==========
+    // 使用二元边 EdgeHomographyProjectBinary 同时优化相机位姿和文本平面参数
+    
+    // 安全计算 ID 偏移（避免与 MapPoint ID 冲突）
+    int nextTextVertexId = maxMPid + 100;  // 留出安全距离
+    
+    // 文本边的 Huber 阈值（像素单位，比点特征稍宽松）
+    const float thHuberText = sqrt(15.0);
+    
+    // 存储 MapText 与其 Vertex ID 的映射
+    map<MapText*, int> mtToVertexId;
+    
+    // 存储文本边以便后续检查
+    vector<EdgeHomographyProjectBinary*> vpEdgesText;
+    vector<MapText*> vpMapTextEdge;
+    
+    // 记录每个 MapText 的参考帧及其优化前位姿（用于后续姿态增量校正）
+    // 如果参考帧在本次 LBA 中被优化，需要用姿态增量重新表达 θ
+    map<MapText*, std::pair<KeyFrame*, Eigen::Matrix4d>> mtRefKFPoseOld;
+    
+    for(auto pMT : lLocalMapTexts)
+    {
+        if(pMT->isBad()) continue;
+        
+        // --- 添加文本平面顶点 (VertexTheta3D) ---
+        VertexTheta3D* vTheta = new VertexTheta3D();
+        Eigen::Vector4d planeRef = pMT->GetPlaneRef();
+        Eigen::Vector3d n_ref = planeRef.head<3>();
+        double d_ref = planeRef[3];
+        // 使用 PlaneToTheta 正确转换：θ = -n/d
+        Eigen::Vector3d theta = TextOptimizer::PlaneToTheta(n_ref, d_ref);
+        vTheta->setEstimate(theta);
+        vTheta->setId(nextTextVertexId);
+        vTheta->setMarginalized(true);  // 必须边缘化！BlockSolver_6_3 期望 3 维顶点是 landmark
+        optimizer.addVertex(vTheta);
+        
+        mtToVertexId[pMT] = nextTextVertexId;
+        nextTextVertexId++;
+        
+        // --- 准备参考帧信息 ---
+        KeyFrame* pRefKF = pMT->GetReferenceKeyFrame();
+        if(!pRefKF || pRefKF->isBad()) continue;
+        
+        // 参考帧位姿 T_iw (world to camera)
+        cv::Mat Tcw_ref = pRefKF->GetPose();
+        Eigen::Matrix4d T_iw = Eigen::Matrix4d::Identity();
+        for(int r = 0; r < 3; r++)
+            for(int c = 0; c < 4; c++)
+                T_iw(r, c) = Tcw_ref.at<float>(r, c);
+        
+        // 记录参考帧及其优化前位姿（用于后续姿态增量校正）
+        mtRefKFPoseOld[pMT] = std::make_pair(pRefKF, T_iw);
+        
+        // 获取参考帧上的检测索引
+        int refIdx = pMT->GetIndexInKeyFrame(pRefKF);
+        if(refIdx < 0 || refIdx >= (int)pRefKF->vTextDetections.size()) continue;
+        
+        auto refDet = pRefKF->vTextDetections[refIdx];
+        
+        // 计算参考帧的 4 个角点归一化射线
+        std::vector<Eigen::Vector2d> refRays;
+        double fx_ref = pRefKF->fx, fy_ref = pRefKF->fy;
+        double cx_ref = pRefKF->cx, cy_ref = pRefKF->cy;
+        
+        // 从 bbox 获取 4 个角点 (TL, TR, BR, BL)
+        double x1 = refDet->bbox[0], y1 = refDet->bbox[1];
+        double x2 = refDet->bbox[2], y2 = refDet->bbox[3];
+        refRays.push_back(Eigen::Vector2d((x1 - cx_ref) / fx_ref, (y1 - cy_ref) / fy_ref));  // TL
+        refRays.push_back(Eigen::Vector2d((x2 - cx_ref) / fx_ref, (y1 - cy_ref) / fy_ref));  // TR
+        refRays.push_back(Eigen::Vector2d((x2 - cx_ref) / fx_ref, (y2 - cy_ref) / fy_ref));  // BR
+        refRays.push_back(Eigen::Vector2d((x1 - cx_ref) / fx_ref, (y2 - cy_ref) / fy_ref));  // BL
+        
+        // --- 添加二元边 (观测帧 -> 文本平面) ---
+        map<KeyFrame*, size_t> observations = pMT->GetObservations();
+        
+        for(auto& obs : observations)
+        {
+            KeyFrame* pKFj = obs.first;
+            size_t detIdx = obs.second;
+            
+            if(pKFj->isBad()) continue;
+            
+            // 检查这个 KF 是否在优化图中（Local 或 Fixed）
+            g2o::VertexSE3Expmap* vPoseJ = dynamic_cast<g2o::VertexSE3Expmap*>(optimizer.vertex(pKFj->mnId));
+            if(!vPoseJ) continue;
+            
+            // 获取当前帧的观测
+            if(detIdx >= pKFj->vTextDetections.size()) continue;
+            auto det = pKFj->vTextDetections[detIdx];
+            
+            // 当前帧内参矩阵
+            Eigen::Matrix3d K_j = Eigen::Matrix3d::Identity();
+            K_j(0,0) = pKFj->fx; K_j(1,1) = pKFj->fy;
+            K_j(0,2) = pKFj->cx; K_j(1,2) = pKFj->cy;
+            
+            // 获取当前帧的 4 个角点观测值（像素坐标）
+            std::vector<Eigen::Vector2d> obsCorners;
+            double ox1 = det->bbox[0], oy1 = det->bbox[1];
+            double ox2 = det->bbox[2], oy2 = det->bbox[3];
+            obsCorners.push_back(Eigen::Vector2d(ox1, oy1));  // TL
+            obsCorners.push_back(Eigen::Vector2d(ox2, oy1));  // TR
+            obsCorners.push_back(Eigen::Vector2d(ox2, oy2));  // BR
+            obsCorners.push_back(Eigen::Vector2d(ox1, oy2));  // BL
+            
+            // 为 4 个角点分别添加二元边
+            for(int k = 0; k < 4; ++k)
+            {
+                EdgeHomographyProjectBinary* e = new EdgeHomographyProjectBinary();
+                
+                // 连接两个顶点：相机位姿 和 文本平面
+                e->setVertex(0, vPoseJ);               // 优化变量：当前相机位姿
+                e->setVertex(1, vTheta);               // 优化变量：文本平面参数
+                
+                // 设置固定参数
+                e->setParams(refRays[k], T_iw, K_j);
+                
+                // 设置观测值
+                e->setMeasurement(obsCorners[k]);
+                
+                // 设置信息矩阵（自适应权重）
+                e->setInformation(Eigen::Matrix2d::Identity() * textInfoScale);
+                
+                // 设置鲁棒核函数
+                g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
+                e->setRobustKernel(rk);
+                rk->setDelta(thHuberText);
+                
+                optimizer.addEdge(e);
+                vpEdgesText.push_back(e);
+                vpMapTextEdge.push_back(pMT);
+            }
+        }
+    }
+
 
     if(pbStopFlag)
         if(*pbStopFlag)
@@ -1166,6 +1348,24 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
             e->setLevel(1);
         }
 
+        e->setRobustKernel(0);
+    }
+    
+    // 检查文本边异常值（使用更宽松的阈值）
+    for(size_t i=0, iend=vpEdgesText.size(); i<iend; i++)
+    {
+        EdgeHomographyProjectBinary* e = vpEdgesText[i];
+        MapText* pMT = vpMapTextEdge[i];
+        
+        if(pMT->isBad())
+            continue;
+        
+        // 文本检测框较大，使用更宽松的阈值 (chi2 = 15.0 对应约 3.87 像素)
+        if(e->chi2() > 15.0)
+        {
+            e->setLevel(1);
+        }
+        
         e->setRobustKernel(0);
     }
 
@@ -1242,6 +1442,90 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
         g2o::VertexSBAPointXYZ* vPoint = static_cast<g2o::VertexSBAPointXYZ*>(optimizer.vertex(pMP->mnId+maxKFid+1));
         pMP->SetWorldPos(Converter::toCvMat(vPoint->estimate()));
         pMP->UpdateNormalAndDepth();
+    }
+    
+    // ========== 新增：恢复优化后的文本平面参数 ==========
+    // 使用 TextOptimizer::ThetaToPlane 从 θ 恢复 (n, d)，然后做符号校正
+    // 关键修复：如果参考帧在本次 LBA 中被优化了，需要用姿态增量重新表达 θ
+    for(auto pMT : lLocalMapTexts)
+    {
+        if(pMT->isBad()) continue;
+        
+        auto it = mtToVertexId.find(pMT);
+        if(it == mtToVertexId.end()) continue;
+        
+        VertexTheta3D* vTheta = static_cast<VertexTheta3D*>(optimizer.vertex(it->second));
+        if(vTheta)
+        {
+            Eigen::Vector3d optimizedTheta = vTheta->estimate();
+            double theta_norm = optimizedTheta.norm();
+            
+            // 检查 θ 的模长是否有效（太小表示平面太远，太大表示平面太近）
+            if(theta_norm < 1e-6 || theta_norm > 100.0)
+            {
+                continue;  // 跳过异常情况，保留原始平面参数
+            }
+            
+            // 使用 ThetaToPlane 恢复 (n, d)
+            Eigen::Vector3d new_n;
+            double new_d;
+            TextOptimizer::ThetaToPlane(optimizedTheta, new_n, new_d);
+            
+            // 符号校正：与原始法向量保持一致，避免法向量翻转
+            Eigen::Vector4d oldPlane = pMT->GetPlaneRef();
+            Eigen::Vector3d old_n = oldPlane.head<3>();
+            if(old_n.norm() > 1e-6 && old_n.dot(new_n) < 0.0)
+            {
+                new_n = -new_n;
+                new_d = -new_d;
+            }
+            
+            // ========== 姿态增量校正 ==========
+            // 检查参考帧是否在本次 LBA 中被优化了
+            // 如果是，需要用姿态增量把 θ 从"旧参考帧坐标系"变换到"新参考帧坐标系"
+            auto refIt = mtRefKFPoseOld.find(pMT);
+            if(refIt != mtRefKFPoseOld.end())
+            {
+                KeyFrame* pRefKF = refIt->second.first;
+                const Eigen::Matrix4d& Tcw_old = refIt->second.second;
+                
+                // 检查参考帧是否在优化图中且不是固定的
+                g2o::VertexSE3Expmap* vRefPose = dynamic_cast<g2o::VertexSE3Expmap*>(optimizer.vertex(pRefKF->mnId));
+                if(vRefPose && !vRefPose->fixed())
+                {
+                    // 参考帧被优化了，获取优化后的位姿
+                    g2o::SE3Quat SE3_new = vRefPose->estimate();
+                    Eigen::Matrix4d Tcw_new = SE3_new.to_homogeneous_matrix();
+                    
+                    // 计算位姿增量：T_new_old = Tcw_new * Twc_old
+                    // Twc_old = Tcw_old^(-1)
+                    Eigen::Matrix4d Twc_old = Tcw_old.inverse();
+                    Eigen::Matrix4d T_new_old = Tcw_new * Twc_old;
+                    
+                    Eigen::Matrix3d R_new_old = T_new_old.block<3,3>(0,0);
+                    Eigen::Vector3d t_new_old = T_new_old.block<3,1>(0,3);
+                    
+                    // 平面变换规则（从旧参考系到新参考系）：
+                    // n_new = R_new_old * n_old
+                    // d_new = d_old - n_new.dot(t_new_old)
+                    Eigen::Vector3d n_transformed = R_new_old * new_n;
+                    double d_transformed = new_d - n_transformed.dot(t_new_old);
+                    
+                    new_n = n_transformed;
+                    new_d = d_transformed;
+                }
+            }
+            
+            // 构建新的平面参数 [n_x, n_y, n_z, d]
+            Eigen::Vector4d newPlaneRef;
+            newPlaneRef.head<3>() = new_n;
+            newPlaneRef[3] = new_d;
+            
+            pMT->SetPlaneRef(newPlaneRef);
+            
+            // 根据新的平面参数更新世界角点
+            pMT->UpdateCornersFromPlane();
+        }
     }
 
 }

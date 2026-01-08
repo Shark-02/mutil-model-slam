@@ -210,7 +210,11 @@ bool TextOptimizer::OptimizePlaneMultiFrame(MapText* pMT, bool bFixScale)
     Eigen::Vector3d n_stage1;
     double d_stage1;
     ThetaToPlane(theta_stage1, n_stage1, d_stage1);
-    if (n_ref.dot(n_stage1) < 0) d_stage1 = -d_stage1;  // 保持符号一致
+    // 符号校正：需要同时翻转 n 和 d
+    if (n_ref.dot(n_stage1) < 0) {
+        n_stage1 = -n_stage1;
+        d_stage1 = -d_stage1;
+    }
     
     std::cout << "[TextOptimizer] Stage1 (point cloud only): Chi2 " 
               << chi2_stage1_before << " -> " << chi2_stage1_after
