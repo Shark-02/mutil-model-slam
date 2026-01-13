@@ -25,6 +25,7 @@
 
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui/highgui.hpp>
+#include <cmath>
 
 #include<mutex>
 
@@ -290,7 +291,24 @@ void FrameDrawer::Update(Tracking *pTracker, bool force_reloc)
         }*/ //OUTCOMMENTED BY YUTONG
         for(auto [node_id, attribute] : pTracker->mCurrentFrame.graph->attributes){
             if(attribute.obj){
+                // 检查物体是否在相机前方，避免无效投影产生 NaN
+                Eigen::Vector3d obj_center = attribute.obj->GetEllipsoid().GetCenter();
+                // Rt.row(2) 是 Z 轴投影向量，计算物体中心在相机坐标系的深度
+                Eigen::Vector4d obj_center_homo;
+                obj_center_homo << obj_center, 1.0;
+                double z = Rt.row(2).dot(obj_center_homo);
+                
+                // 如果物体在相机背面或距离太近，跳过投影
+                if(z < 0.1) 
+                    continue;
+                
                 auto proj = attribute.obj->GetEllipsoid().project(P);
+                
+                // 额外检查投影结果是否有效
+                auto axes = proj.GetAxes();
+                if(std::isnan(axes[0]) || std::isnan(axes[1]) || axes[0] <= 0.0 || axes[1] <= 0.0)
+                    continue;
+                
                 object_projections_widgets_.push_back(ObjectProjectionWidget(proj, attribute.obj->GetId(),
                                                                             attribute.obj->GetCategoryId(), 
                                                                             attribute.obj->GetColor(),
@@ -391,10 +409,13 @@ cv::Mat FrameDrawer::DrawDetections(cv::Mat img, std::vector<DetectionWidget, Ei
 
 void draw_ellipse_dashed(cv::Mat img, const Ellipse& ell, const cv::Scalar& color, int thickness)
 {
+    const auto& axes = ell.GetAxes();
+    // 检查椭圆参数有效性（包括 NaN 检查）
+    if(std::isnan(axes[0]) || std::isnan(axes[1]) || axes[0] <= 0.0 || axes[1] <= 0.0) return;
+    
     int size = 8;
     int space = 16;
     const auto& c = ell.GetCenter();
-    const auto& axes = ell.GetAxes();
     double angle = ell.GetAngle();
     for (int i = 0; i < 360; i += space) {
         cv::ellipse(img, cv::Point2f(c[0], c[1]), cv::Size2f(axes[0], axes[1]),
@@ -426,7 +447,8 @@ cv::Mat FrameDrawer::DrawProjections(cv::Mat img, std::vector<ObjectProjectionWi
         const auto& c = ell.GetCenter();
         const auto& axes = ell.GetAxes();
         double angle = ell.GetAngle();
-        if(axes[0] <= 0.001 || axes[1] <= 0.001)
+        // 检查 NaN 和无效值（NaN 比较永远返回 false，需要显式检查）
+        if(std::isnan(axes[0]) || std::isnan(axes[1]) || axes[0] <= 0.001 || axes[1] <= 0.001)
             continue;
 //        auto bb = ell.ComputeBbox();
         // auto [status_, bb] = find_on_image_bbox(ell, img.cols, img.rows);

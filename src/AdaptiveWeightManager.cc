@@ -116,8 +116,8 @@ void AdaptiveWeightManager::UpdateWeights(
         
         for (const auto& det : textDetections)
         {
-            // 使用text_confidence如果有，否则用score
-            totalConf += (det->text_confidence > 0 ? det->text_confidence : det->score);
+            // 使用 text_confidence；如果为负（未赋值）才回退到检测分数
+            totalConf += (det->text_confidence >= 0 ? det->text_confidence : det->score);
             double cx = (det->bbox[0] + det->bbox[2]) / 2.0;
             double cy = (det->bbox[1] + det->bbox[3]) / 2.0;
             textCenters.push_back(Eigen::Vector2d(cx, cy));

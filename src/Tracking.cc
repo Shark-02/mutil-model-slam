@@ -1784,43 +1784,66 @@ void Tracking::UpdateLocalPoints()
 
 void Tracking::UpdateLocalKeyFrames(bool use_object) //YUTONG TODO
 {
-    // Each map point vote for the keyframes in which it has been observed
-    map<KeyFrame*,int> keyframeCounter;
+    // ========== 加权投票策略：点云打底 + 语义增强 ==========
+    // 使用 float 以支持加权投票
+    map<KeyFrame*, float> keyframeCounter;
 
-    if(use_object){
-        for(auto [node_id, attribute] : mCurrentFrame.graph->attributes){
-            Object* obj = attribute.obj;
-            if(!obj) continue;
-            if(obj->isBad()) continue;
-            auto mps = obj->GetAssociatedMapPoints();
-            for(auto pMP : mps){
-                if(pMP){
-                    if(!pMP->isBad()){
-                        const map<KeyFrame*,size_t> observations = pMP->GetObservations();
-                        for(map<KeyFrame*,size_t>::const_iterator it=observations.begin(), itend=observations.end(); it!=itend; it++)
-                            keyframeCounter[it->first]++;
-                    }
-                }
+    // ========== 第1步：特征点投票（几何基础，始终执行）==========
+    for(int i=0; i<mCurrentFrame.N; i++)
+    {
+        if(mCurrentFrame.mvpMapPoints[i])
+        {
+            MapPoint* pMP = mCurrentFrame.mvpMapPoints[i];
+            if(!pMP->isBad())
+            {
+                const map<KeyFrame*,size_t> observations = pMP->GetObservations();
+                for(map<KeyFrame*,size_t>::const_iterator it=observations.begin(), itend=observations.end(); it!=itend; it++)
+                    keyframeCounter[it->first] += 1.0f;  // 每个特征点投1票
+            }
+            else
+            {
+                mCurrentFrame.mvpMapPoints[i]=NULL;
             }
         }
     }
-    
-    if(keyframeCounter.empty()){
-        for(int i=0; i<mCurrentFrame.N; i++)
+
+    // ========== 第2步：物体投票（语义增强，去重投票）==========
+    // 原则：一个物体对一个关键帧只投一票（无论内部有多少地图点）
+    if(mCurrentFrame.graph)
+    {
+        // 获取语义权重（AdaptiveWeightManager 已综合考虑物体数量、置信度、空间分布）
+        float objectBoost = 1.0f;
+        if(mpAdaptiveWeightManager) {
+            objectBoost = static_cast<float>(mpAdaptiveWeightManager->GetCurrentWeights().objectWeight);
+        }
+        
+        // 遍历每个物体
+        for(auto& [node_id, attribute] : mCurrentFrame.graph->attributes)
         {
-            if(mCurrentFrame.mvpMapPoints[i])
+            Object* obj = attribute.obj;
+            if(!obj) continue;
+            if(obj->isBad()) continue;
+            
+            // ★ 关键：收集观测到该物体的所有关键帧（去重）
+            set<KeyFrame*> objectObservers;
+            std::set<MapPoint*> mps = obj->GetAssociatedMapPoints();
+            for(MapPoint* pMP : mps)
             {
-                MapPoint* pMP = mCurrentFrame.mvpMapPoints[i];
-                if(!pMP->isBad())
+                if(pMP && !pMP->isBad())
                 {
                     const map<KeyFrame*,size_t> observations = pMP->GetObservations();
                     for(map<KeyFrame*,size_t>::const_iterator it=observations.begin(), itend=observations.end(); it!=itend; it++)
-                        keyframeCounter[it->first]++;
+                    {
+                        objectObservers.insert(it->first);
+                    }
                 }
-                else
-                {
-                    mCurrentFrame.mvpMapPoints[i]=NULL;
-                }
+            }
+            
+            // ★ 每个物体对每个关键帧只投一票（使用物体置信度加权）
+            float objectVote = objectBoost * attribute.confidence;
+            for(KeyFrame* pKF : objectObservers)
+            {
+                keyframeCounter[pKF] += objectVote;
             }
         }
     }
@@ -1828,14 +1851,14 @@ void Tracking::UpdateLocalKeyFrames(bool use_object) //YUTONG TODO
     if(keyframeCounter.empty())
         return;
 
-    int max=0;
+    float max=0;
     KeyFrame* pKFmax= static_cast<KeyFrame*>(NULL);
 
     mvpLocalKeyFrames.clear();
     mvpLocalKeyFrames.reserve(3*keyframeCounter.size());
 
     // All keyframes that observe a map point are included in the local map. Also check which keyframe shares most points
-    for(map<KeyFrame*,int>::const_iterator it=keyframeCounter.begin(), itEnd=keyframeCounter.end(); it!=itEnd; it++)
+    for(map<KeyFrame*,float>::const_iterator it=keyframeCounter.begin(), itEnd=keyframeCounter.end(); it!=itEnd; it++)
     {
         KeyFrame* pKF = it->first;
 

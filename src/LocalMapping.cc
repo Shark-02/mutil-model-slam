@@ -28,6 +28,7 @@
 
 #include<mutex>
 #include <unistd.h>
+#include <cmath>
 
 namespace ORB_SLAM2
 {
@@ -117,10 +118,20 @@ void LocalMapping::Run()
                                         2);
                 auto obj = attribute.obj;
                 if(!obj) continue;
+                
+                // 检查物体是否在相机前方
+                Eigen::Vector3d obj_center = obj->GetEllipsoid().GetCenter();
+                Eigen::Vector4d obj_center_homo;
+                obj_center_homo << obj_center, 1.0;
+                double z = Rt_eigen.row(2).dot(obj_center_homo);
+                if(z < 0.1) continue;
+                
                 auto proj = attribute.obj->GetEllipsoid().project(P);
                 auto c = proj.GetCenter();
                 auto axes = proj.GetAxes();
                 double angle = proj.GetAngle();
+                // 检查椭圆参数有效性，避免 OpenCV 异常（包括 NaN）
+                if(std::isnan(axes[0]) || std::isnan(axes[1]) || axes[0] <= 0.0 || axes[1] <= 0.0) continue;
                 if(obj->isBad())
                     cv::ellipse(mpCurrentKeyFrame->im, cv::Point2f(c[0], c[1]), cv::Size2f(axes[0], axes[1]), TO_DEG(angle), 0, 360, cv::Scalar(0, 0, 255), 2);
                 else
