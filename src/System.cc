@@ -335,7 +335,7 @@ void System::Shutdown()
     if(mpViewer)
     {
         std::cout << "Shutdown: mpViewer" << std::endl;
-        // mpViewer->RequestFinish();
+        mpViewer->RequestFinish();
         while(!mpViewer->isFinished())
             usleep(5000);
     }
@@ -347,9 +347,6 @@ void System::Shutdown()
         usleep(5000);
     }
 
-    if(mpViewer){
-        pangolin::BindToContext("VOOM: Map Viewer");
-    }
     CategoryColorsManager::FreeInstance();
 }
 

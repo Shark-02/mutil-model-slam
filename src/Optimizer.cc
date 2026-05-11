@@ -364,84 +364,88 @@ int Optimizer::PoseOptimization(Frame *pFrame)
     }
     }
 
-    // --- PLAN A: Text Corner Optimization ---
-    // Added by Copilot: Optimize pose using 3D Text corners projected to 2D detection corners
     struct TextEdgeInfo {
         size_t detIdx;
         vector<g2o::EdgeSE3ProjectXYZOnlyPose*> edges;
     };
     vector<TextEdgeInfo> vTextEdges;
 
-    // Iterate over all text detections in this frame
-    for(size_t idx=0; idx<pFrame->vTextDetections.size(); idx++)
+    if(0)
     {
-        if(idx >= pFrame->mvpMapTexts.size()) continue;
-        MapText* pMT = pFrame->mvpMapTexts[idx];
-        if(!pMT) continue;
-        if(pMT->GetState() != TEXTGOOD) continue;
-
-        // Get 3D corners (TL, TR, BR, BL)
-        std::vector<cv::Mat> worldCorners = pMT->GetWorldCorners();
-        if(worldCorners.size() != 4) continue;
-
-        Detection::Ptr det = pFrame->vTextDetections[idx];
-        
-        // Get 2D corners
-        std::vector<Eigen::Vector2d> corners2d;
-        if(det->quad.size() == 4) {
-            corners2d = det->quad;
-        } else {
-            // Fallback to bbox (TL, TR, BR, BL)
-            double x1 = det->bbox[0];
-            double y1 = det->bbox[1];
-            double x2 = det->bbox[2];
-            double y2 = det->bbox[3];
-            corners2d.push_back(Eigen::Vector2d(x1, y1)); // TL
-            corners2d.push_back(Eigen::Vector2d(x2, y1)); // TR
-            corners2d.push_back(Eigen::Vector2d(x2, y2)); // BR
-            corners2d.push_back(Eigen::Vector2d(x1, y2)); // BL
-        }
-
-        TextEdgeInfo edgeInfo;
-        edgeInfo.detIdx = idx;
-
-        // Create 4 edges for the 4 corners
-        for(int k=0; k<4; ++k)
+        // --- PLAN A: Text Corner Optimization ---
+        // Added by Copilot: Optimize pose using 3D Text corners projected to 2D detection corners
+        // Temporarily disabled to match VOOM behavior (no text constraints in pose optimization).
+        // Iterate over all text detections in this frame
+        for(size_t idx=0; idx<pFrame->vTextDetections.size(); idx++)
         {
-            g2o::EdgeSE3ProjectXYZOnlyPose* e = new g2o::EdgeSE3ProjectXYZOnlyPose();
-            e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(0)));
+            if(idx >= pFrame->mvpMapTexts.size()) continue;
+            MapText* pMT = pFrame->mvpMapTexts[idx];
+            if(!pMT) continue;
+            if(pMT->GetState() != TEXTGOOD) continue;
+
+            // Get 3D corners (TL, TR, BR, BL)
+            std::vector<cv::Mat> worldCorners = pMT->GetWorldCorners();
+            if(worldCorners.size() != 4) continue;
+
+            Detection::Ptr det = pFrame->vTextDetections[idx];
             
-            e->setMeasurement(corners2d[k]);
-            
-            // Low weight for text boxes (high uncertainty)
-            // Standard points use invSigma2. We use a fixed low weight (e.g. sigma=10px -> info=0.01)
-            // This ensures text doesn't break the optimization if the box is jittery
-            e->setInformation(Eigen::Matrix2d::Identity() * 0.01); 
+            // Get 2D corners
+            std::vector<Eigen::Vector2d> corners2d;
+            if(det->quad.size() == 4) {
+                corners2d = det->quad;
+            } else {
+                // Fallback to bbox (TL, TR, BR, BL)
+                double x1 = det->bbox[0];
+                double y1 = det->bbox[1];
+                double x2 = det->bbox[2];
+                double y2 = det->bbox[3];
+                corners2d.push_back(Eigen::Vector2d(x1, y1)); // TL
+                corners2d.push_back(Eigen::Vector2d(x2, y1)); // TR
+                corners2d.push_back(Eigen::Vector2d(x2, y2)); // BR
+                corners2d.push_back(Eigen::Vector2d(x1, y2)); // BL
+            }
 
-            g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
-            e->setRobustKernel(rk);
-            rk->setDelta(deltaMono); // Use same delta as mono points
+            TextEdgeInfo edgeInfo;
+            edgeInfo.detIdx = idx;
 
-            e->fx = pFrame->fx;
-            e->fy = pFrame->fy;
-            e->cx = pFrame->cx;
-            e->cy = pFrame->cy;
+            // Create 4 edges for the 4 corners
+            for(int k=0; k<4; ++k)
+            {
+                g2o::EdgeSE3ProjectXYZOnlyPose* e = new g2o::EdgeSE3ProjectXYZOnlyPose();
+                e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(0)));
+                
+                e->setMeasurement(corners2d[k]);
+                
+                // Low weight for text boxes (high uncertainty)
+                // Standard points use invSigma2. We use a fixed low weight (e.g. sigma=10px -> info=0.01)
+                // This ensures text doesn't break the optimization if the box is jittery
+                e->setInformation(Eigen::Matrix2d::Identity() * 0.01); 
 
-            cv::Mat Xw_cv = worldCorners[k];
-            e->Xw[0] = Xw_cv.at<float>(0);
-            e->Xw[1] = Xw_cv.at<float>(1);
-            e->Xw[2] = Xw_cv.at<float>(2);
+                g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
+                e->setRobustKernel(rk);
+                rk->setDelta(deltaMono); // Use same delta as mono points
 
-            optimizer.addEdge(e);
-            edgeInfo.edges.push_back(e);
+                e->fx = pFrame->fx;
+                e->fy = pFrame->fy;
+                e->cx = pFrame->cx;
+                e->cy = pFrame->cy;
+
+                cv::Mat Xw_cv = worldCorners[k];
+                e->Xw[0] = Xw_cv.at<float>(0);
+                e->Xw[1] = Xw_cv.at<float>(1);
+                e->Xw[2] = Xw_cv.at<float>(2);
+
+                optimizer.addEdge(e);
+                edgeInfo.edges.push_back(e);
+            }
+            vTextEdges.push_back(edgeInfo);
+            nInitialCorrespondences++; 
         }
-        vTextEdges.push_back(edgeInfo);
-        nInitialCorrespondences++; 
-    }
 
-    // [DEBUG] Print text optimization info
-    if(!vTextEdges.empty()) {
-        std::cout << "[Optimizer] Added " << vTextEdges.size() << " text constraints (4 corners each)." << std::endl;
+        // [DEBUG] Print text optimization info
+        if(!vTextEdges.empty()) {
+            std::cout << "[Optimizer] Added " << vTextEdges.size() << " text constraints (4 corners each)." << std::endl;
+        }
     }
 
     if(nInitialCorrespondences<3)
@@ -717,79 +721,83 @@ int Optimizer::PoseOptimization(Frame *pFrame, const OptimizationWeights& weight
     }
     }
 
-    // --- Text Corner Optimization with Adaptive Weights ---
     struct TextEdgeInfo {
         size_t detIdx;
         vector<g2o::EdgeSE3ProjectXYZOnlyPose*> edges;
     };
     vector<TextEdgeInfo> vTextEdges;
 
-    for(size_t idx=0; idx<pFrame->vTextDetections.size(); idx++)
+    if(0)
     {
-        if(idx >= pFrame->mvpMapTexts.size()) continue;
-        MapText* pMT = pFrame->mvpMapTexts[idx];
-        if(!pMT) continue;
-        if(pMT->GetState() != TEXTGOOD) continue;
-
-        std::vector<cv::Mat> worldCorners = pMT->GetWorldCorners();
-        if(worldCorners.size() != 4) continue;
-
-        Detection::Ptr det = pFrame->vTextDetections[idx];
-        
-        std::vector<Eigen::Vector2d> corners2d;
-        if(det->quad.size() == 4) {
-            corners2d = det->quad;
-        } else {
-            double x1 = det->bbox[0];
-            double y1 = det->bbox[1];
-            double x2 = det->bbox[2];
-            double y2 = det->bbox[3];
-            corners2d.push_back(Eigen::Vector2d(x1, y1));
-            corners2d.push_back(Eigen::Vector2d(x2, y1));
-            corners2d.push_back(Eigen::Vector2d(x2, y2));
-            corners2d.push_back(Eigen::Vector2d(x1, y2));
-        }
-
-        TextEdgeInfo edgeInfo;
-        edgeInfo.detIdx = idx;
-
-        for(int k=0; k<4; ++k)
+        // --- Text Corner Optimization with Adaptive Weights ---
+        // Temporarily disabled to match VOOM behavior (no text constraints in pose optimization).
+        for(size_t idx=0; idx<pFrame->vTextDetections.size(); idx++)
         {
-            g2o::EdgeSE3ProjectXYZOnlyPose* e = new g2o::EdgeSE3ProjectXYZOnlyPose();
-            e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(0)));
+            if(idx >= pFrame->mvpMapTexts.size()) continue;
+            MapText* pMT = pFrame->mvpMapTexts[idx];
+            if(!pMT) continue;
+            if(pMT->GetState() != TEXTGOOD) continue;
+
+            std::vector<cv::Mat> worldCorners = pMT->GetWorldCorners();
+            if(worldCorners.size() != 4) continue;
+
+            Detection::Ptr det = pFrame->vTextDetections[idx];
             
-            e->setMeasurement(corners2d[k]);
-            
-            // 使用自适应文本权重（基础权重 * 自适应缩放因子）
-            double textWeight = weights.textInfoScale;
-            e->setInformation(Eigen::Matrix2d::Identity() * textWeight);
+            std::vector<Eigen::Vector2d> corners2d;
+            if(det->quad.size() == 4) {
+                corners2d = det->quad;
+            } else {
+                double x1 = det->bbox[0];
+                double y1 = det->bbox[1];
+                double x2 = det->bbox[2];
+                double y2 = det->bbox[3];
+                corners2d.push_back(Eigen::Vector2d(x1, y1));
+                corners2d.push_back(Eigen::Vector2d(x2, y1));
+                corners2d.push_back(Eigen::Vector2d(x2, y2));
+                corners2d.push_back(Eigen::Vector2d(x1, y2));
+            }
 
-            g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
-            e->setRobustKernel(rk);
-            rk->setDelta(deltaMono);
+            TextEdgeInfo edgeInfo;
+            edgeInfo.detIdx = idx;
 
-            e->fx = pFrame->fx;
-            e->fy = pFrame->fy;
-            e->cx = pFrame->cx;
-            e->cy = pFrame->cy;
+            for(int k=0; k<4; ++k)
+            {
+                g2o::EdgeSE3ProjectXYZOnlyPose* e = new g2o::EdgeSE3ProjectXYZOnlyPose();
+                e->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex*>(optimizer.vertex(0)));
+                
+                e->setMeasurement(corners2d[k]);
+                
+                // 使用自适应文本权重（基础权重 * 自适应缩放因子）
+                double textWeight = weights.textInfoScale;
+                e->setInformation(Eigen::Matrix2d::Identity() * textWeight);
 
-            cv::Mat Xw_cv = worldCorners[k];
-            e->Xw[0] = Xw_cv.at<float>(0);
-            e->Xw[1] = Xw_cv.at<float>(1);
-            e->Xw[2] = Xw_cv.at<float>(2);
+                g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
+                e->setRobustKernel(rk);
+                rk->setDelta(deltaMono);
 
-            optimizer.addEdge(e);
-            edgeInfo.edges.push_back(e);
+                e->fx = pFrame->fx;
+                e->fy = pFrame->fy;
+                e->cx = pFrame->cx;
+                e->cy = pFrame->cy;
+
+                cv::Mat Xw_cv = worldCorners[k];
+                e->Xw[0] = Xw_cv.at<float>(0);
+                e->Xw[1] = Xw_cv.at<float>(1);
+                e->Xw[2] = Xw_cv.at<float>(2);
+
+                optimizer.addEdge(e);
+                edgeInfo.edges.push_back(e);
+            }
+            vTextEdges.push_back(edgeInfo);
+            nInitialCorrespondences++;
         }
-        vTextEdges.push_back(edgeInfo);
-        nInitialCorrespondences++;
-    }
 
-    // Debug: Print adaptive weights info
-    if(!vTextEdges.empty()) {
-        std::cout << "[Optimizer] Adaptive weights - Text: " << weights.textInfoScale 
-                  << " Point: " << weights.pointInfoScale 
-                  << " | " << vTextEdges.size() << " text constraints" << std::endl;
+        // Debug: Print adaptive weights info
+        if(!vTextEdges.empty()) {
+            std::cout << "[Optimizer] Adaptive weights - Text: " << weights.textInfoScale 
+                      << " Point: " << weights.pointInfoScale 
+                      << " | " << vTextEdges.size() << " text constraints" << std::endl;
+        }
     }
 
     if(nInitialCorrespondences<3)
@@ -965,17 +973,21 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
 
     // ========== 新增：收集 Local MapTexts (只要 TEXTGOOD 状态) ==========
     list<MapText*> lLocalMapTexts;
-    for(list<KeyFrame*>::iterator lit=lLocalKeyFrames.begin(), lend=lLocalKeyFrames.end(); lit!=lend; lit++)
+    if(0)
     {
-        vector<MapText*> vpMTs = (*lit)->GetMapTextMatches();
-        for(auto pMT : vpMTs)
+        // Temporarily disabled to match VOOM behavior (LBA without text semantics).
+        for(list<KeyFrame*>::iterator lit=lLocalKeyFrames.begin(), lend=lLocalKeyFrames.end(); lit!=lend; lit++)
         {
-            if(pMT && !pMT->isBad() && 
-               pMT->GetState() == TEXTGOOD &&  // 只取 GOOD 状态
-               pMT->mnBALocalForKF != pKF->mnId)
+            vector<MapText*> vpMTs = (*lit)->GetMapTextMatches();
+            for(auto pMT : vpMTs)
             {
-                lLocalMapTexts.push_back(pMT);
-                pMT->mnBALocalForKF = pKF->mnId;
+                if(pMT && !pMT->isBad() && 
+                   pMT->GetState() == TEXTGOOD &&  // 只取 GOOD 状态
+                   pMT->mnBALocalForKF != pKF->mnId)
+                {
+                    lLocalMapTexts.push_back(pMT);
+                    pMT->mnBALocalForKF = pKF->mnId;
+                }
             }
         }
     }
@@ -1186,116 +1198,120 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool* pbStopFlag, Map* pMap
     // 如果参考帧在本次 LBA 中被优化，需要用姿态增量重新表达 θ
     map<MapText*, std::pair<KeyFrame*, Eigen::Matrix4d>> mtRefKFPoseOld;
     
-    for(auto pMT : lLocalMapTexts)
+    if(0)
     {
-        if(pMT->isBad()) continue;
-        
-        // --- 添加文本平面顶点 (VertexTheta3D) ---
-        VertexTheta3D* vTheta = new VertexTheta3D();
-        Eigen::Vector4d planeRef = pMT->GetPlaneRef();
-        Eigen::Vector3d n_ref = planeRef.head<3>();
-        double d_ref = planeRef[3];
-        // 使用 PlaneToTheta 正确转换：θ = -n/d
-        Eigen::Vector3d theta = TextOptimizer::PlaneToTheta(n_ref, d_ref);
-        vTheta->setEstimate(theta);
-        vTheta->setId(nextTextVertexId);
-        vTheta->setMarginalized(true);  // 必须边缘化！BlockSolver_6_3 期望 3 维顶点是 landmark
-        optimizer.addVertex(vTheta);
-        
-        mtToVertexId[pMT] = nextTextVertexId;
-        nextTextVertexId++;
-        
-        // --- 准备参考帧信息 ---
-        KeyFrame* pRefKF = pMT->GetReferenceKeyFrame();
-        if(!pRefKF || pRefKF->isBad()) continue;
-        
-        // 参考帧位姿 T_iw (world to camera)
-        cv::Mat Tcw_ref = pRefKF->GetPose();
-        Eigen::Matrix4d T_iw = Eigen::Matrix4d::Identity();
-        for(int r = 0; r < 3; r++)
-            for(int c = 0; c < 4; c++)
-                T_iw(r, c) = Tcw_ref.at<float>(r, c);
-        
-        // 记录参考帧及其优化前位姿（用于后续姿态增量校正）
-        mtRefKFPoseOld[pMT] = std::make_pair(pRefKF, T_iw);
-        
-        // 获取参考帧上的检测索引
-        int refIdx = pMT->GetIndexInKeyFrame(pRefKF);
-        if(refIdx < 0 || refIdx >= (int)pRefKF->vTextDetections.size()) continue;
-        
-        auto refDet = pRefKF->vTextDetections[refIdx];
-        
-        // 计算参考帧的 4 个角点归一化射线
-        std::vector<Eigen::Vector2d> refRays;
-        double fx_ref = pRefKF->fx, fy_ref = pRefKF->fy;
-        double cx_ref = pRefKF->cx, cy_ref = pRefKF->cy;
-        
-        // 从 bbox 获取 4 个角点 (TL, TR, BR, BL)
-        double x1 = refDet->bbox[0], y1 = refDet->bbox[1];
-        double x2 = refDet->bbox[2], y2 = refDet->bbox[3];
-        refRays.push_back(Eigen::Vector2d((x1 - cx_ref) / fx_ref, (y1 - cy_ref) / fy_ref));  // TL
-        refRays.push_back(Eigen::Vector2d((x2 - cx_ref) / fx_ref, (y1 - cy_ref) / fy_ref));  // TR
-        refRays.push_back(Eigen::Vector2d((x2 - cx_ref) / fx_ref, (y2 - cy_ref) / fy_ref));  // BR
-        refRays.push_back(Eigen::Vector2d((x1 - cx_ref) / fx_ref, (y2 - cy_ref) / fy_ref));  // BL
-        
-        // --- 添加二元边 (观测帧 -> 文本平面) ---
-        map<KeyFrame*, size_t> observations = pMT->GetObservations();
-        
-        for(auto& obs : observations)
+        // Temporarily disabled to match VOOM behavior (LBA without text edges).
+        for(auto pMT : lLocalMapTexts)
         {
-            KeyFrame* pKFj = obs.first;
-            size_t detIdx = obs.second;
+            if(pMT->isBad()) continue;
             
-            if(pKFj->isBad()) continue;
+            // --- 添加文本平面顶点 (VertexTheta3D) ---
+            VertexTheta3D* vTheta = new VertexTheta3D();
+            Eigen::Vector4d planeRef = pMT->GetPlaneRef();
+            Eigen::Vector3d n_ref = planeRef.head<3>();
+            double d_ref = planeRef[3];
+            // 使用 PlaneToTheta 正确转换：θ = -n/d
+            Eigen::Vector3d theta = TextOptimizer::PlaneToTheta(n_ref, d_ref);
+            vTheta->setEstimate(theta);
+            vTheta->setId(nextTextVertexId);
+            vTheta->setMarginalized(true);  // 必须边缘化！BlockSolver_6_3 期望 3 维顶点是 landmark
+            optimizer.addVertex(vTheta);
             
-            // 检查这个 KF 是否在优化图中（Local 或 Fixed）
-            g2o::VertexSE3Expmap* vPoseJ = dynamic_cast<g2o::VertexSE3Expmap*>(optimizer.vertex(pKFj->mnId));
-            if(!vPoseJ) continue;
+            mtToVertexId[pMT] = nextTextVertexId;
+            nextTextVertexId++;
             
-            // 获取当前帧的观测
-            if(detIdx >= pKFj->vTextDetections.size()) continue;
-            auto det = pKFj->vTextDetections[detIdx];
+            // --- 准备参考帧信息 ---
+            KeyFrame* pRefKF = pMT->GetReferenceKeyFrame();
+            if(!pRefKF || pRefKF->isBad()) continue;
             
-            // 当前帧内参矩阵
-            Eigen::Matrix3d K_j = Eigen::Matrix3d::Identity();
-            K_j(0,0) = pKFj->fx; K_j(1,1) = pKFj->fy;
-            K_j(0,2) = pKFj->cx; K_j(1,2) = pKFj->cy;
+            // 参考帧位姿 T_iw (world to camera)
+            cv::Mat Tcw_ref = pRefKF->GetPose();
+            Eigen::Matrix4d T_iw = Eigen::Matrix4d::Identity();
+            for(int r = 0; r < 3; r++)
+                for(int c = 0; c < 4; c++)
+                    T_iw(r, c) = Tcw_ref.at<float>(r, c);
             
-            // 获取当前帧的 4 个角点观测值（像素坐标）
-            std::vector<Eigen::Vector2d> obsCorners;
-            double ox1 = det->bbox[0], oy1 = det->bbox[1];
-            double ox2 = det->bbox[2], oy2 = det->bbox[3];
-            obsCorners.push_back(Eigen::Vector2d(ox1, oy1));  // TL
-            obsCorners.push_back(Eigen::Vector2d(ox2, oy1));  // TR
-            obsCorners.push_back(Eigen::Vector2d(ox2, oy2));  // BR
-            obsCorners.push_back(Eigen::Vector2d(ox1, oy2));  // BL
+            // 记录参考帧及其优化前位姿（用于后续姿态增量校正）
+            mtRefKFPoseOld[pMT] = std::make_pair(pRefKF, T_iw);
             
-            // 为 4 个角点分别添加二元边
-            for(int k = 0; k < 4; ++k)
+            // 获取参考帧上的检测索引
+            int refIdx = pMT->GetIndexInKeyFrame(pRefKF);
+            if(refIdx < 0 || refIdx >= (int)pRefKF->vTextDetections.size()) continue;
+            
+            auto refDet = pRefKF->vTextDetections[refIdx];
+            
+            // 计算参考帧的 4 个角点归一化射线
+            std::vector<Eigen::Vector2d> refRays;
+            double fx_ref = pRefKF->fx, fy_ref = pRefKF->fy;
+            double cx_ref = pRefKF->cx, cy_ref = pRefKF->cy;
+            
+            // 从 bbox 获取 4 个角点 (TL, TR, BR, BL)
+            double x1 = refDet->bbox[0], y1 = refDet->bbox[1];
+            double x2 = refDet->bbox[2], y2 = refDet->bbox[3];
+            refRays.push_back(Eigen::Vector2d((x1 - cx_ref) / fx_ref, (y1 - cy_ref) / fy_ref));  // TL
+            refRays.push_back(Eigen::Vector2d((x2 - cx_ref) / fx_ref, (y1 - cy_ref) / fy_ref));  // TR
+            refRays.push_back(Eigen::Vector2d((x2 - cx_ref) / fx_ref, (y2 - cy_ref) / fy_ref));  // BR
+            refRays.push_back(Eigen::Vector2d((x1 - cx_ref) / fx_ref, (y2 - cy_ref) / fy_ref));  // BL
+            
+            // --- 添加二元边 (观测帧 -> 文本平面) ---
+            map<KeyFrame*, size_t> observations = pMT->GetObservations();
+            
+            for(auto& obs : observations)
             {
-                EdgeHomographyProjectBinary* e = new EdgeHomographyProjectBinary();
+                KeyFrame* pKFj = obs.first;
+                size_t detIdx = obs.second;
                 
-                // 连接两个顶点：相机位姿 和 文本平面
-                e->setVertex(0, vPoseJ);               // 优化变量：当前相机位姿
-                e->setVertex(1, vTheta);               // 优化变量：文本平面参数
+                if(pKFj->isBad()) continue;
                 
-                // 设置固定参数
-                e->setParams(refRays[k], T_iw, K_j);
+                // 检查这个 KF 是否在优化图中（Local 或 Fixed）
+                g2o::VertexSE3Expmap* vPoseJ = dynamic_cast<g2o::VertexSE3Expmap*>(optimizer.vertex(pKFj->mnId));
+                if(!vPoseJ) continue;
                 
-                // 设置观测值
-                e->setMeasurement(obsCorners[k]);
+                // 获取当前帧的观测
+                if(detIdx >= pKFj->vTextDetections.size()) continue;
+                auto det = pKFj->vTextDetections[detIdx];
                 
-                // 设置信息矩阵（自适应权重）
-                e->setInformation(Eigen::Matrix2d::Identity() * textInfoScale);
+                // 当前帧内参矩阵
+                Eigen::Matrix3d K_j = Eigen::Matrix3d::Identity();
+                K_j(0,0) = pKFj->fx; K_j(1,1) = pKFj->fy;
+                K_j(0,2) = pKFj->cx; K_j(1,2) = pKFj->cy;
                 
-                // 设置鲁棒核函数
-                g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
-                e->setRobustKernel(rk);
-                rk->setDelta(thHuberText);
+                // 获取当前帧的 4 个角点观测值（像素坐标）
+                std::vector<Eigen::Vector2d> obsCorners;
+                double ox1 = det->bbox[0], oy1 = det->bbox[1];
+                double ox2 = det->bbox[2], oy2 = det->bbox[3];
+                obsCorners.push_back(Eigen::Vector2d(ox1, oy1));  // TL
+                obsCorners.push_back(Eigen::Vector2d(ox2, oy1));  // TR
+                obsCorners.push_back(Eigen::Vector2d(ox2, oy2));  // BR
+                obsCorners.push_back(Eigen::Vector2d(ox1, oy2));  // BL
                 
-                optimizer.addEdge(e);
-                vpEdgesText.push_back(e);
-                vpMapTextEdge.push_back(pMT);
+                // 为 4 个角点分别添加二元边
+                for(int k = 0; k < 4; ++k)
+                {
+                    EdgeHomographyProjectBinary* e = new EdgeHomographyProjectBinary();
+                    
+                    // 连接两个顶点：相机位姿 和 文本平面
+                    e->setVertex(0, vPoseJ);               // 优化变量：当前相机位姿
+                    e->setVertex(1, vTheta);               // 优化变量：文本平面参数
+                    
+                    // 设置固定参数
+                    e->setParams(refRays[k], T_iw, K_j);
+                    
+                    // 设置观测值
+                    e->setMeasurement(obsCorners[k]);
+                    
+                    // 设置信息矩阵（自适应权重）
+                    e->setInformation(Eigen::Matrix2d::Identity() * textInfoScale);
+                    
+                    // 设置鲁棒核函数
+                    g2o::RobustKernelHuber* rk = new g2o::RobustKernelHuber;
+                    e->setRobustKernel(rk);
+                    rk->setDelta(thHuberText);
+                    
+                    optimizer.addEdge(e);
+                    vpEdgesText.push_back(e);
+                    vpMapTextEdge.push_back(pMT);
+                }
             }
         }
     }
